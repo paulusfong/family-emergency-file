@@ -1,3 +1,5 @@
+import { STRYKER_MUTATE } from "./scripts/ci-changed.mjs";
+
 const scopedMutate = process.env.STRYKER_MUTATE?.split(",").map((s) => s.trim()).filter(Boolean);
 const scopedTestCommand = process.env.STRYKER_TEST_COMMAND;
 
@@ -6,27 +8,14 @@ const config = {
   packageManager: "npm",
   testRunner: "command",
   commandRunner: {
+    // Partial CI narrows this to the tests that import the mutated files.
     command: scopedTestCommand || "npm test",
   },
   coverageAnalysis: "off",
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
-  mutate: scopedMutate?.length
-    ? scopedMutate
-    : [
-        "src/lib/**/*.ts",
-        "src/app/actions.ts",
-        "src/proxy.ts",
-        "!src/**/*.test.ts",
-        // Client-only better-auth wrapper; no logic.
-        "!src/lib/auth-client.ts",
-        // better-auth config object; behaviour covered via auth.coverage.test.ts.
-        "!src/lib/auth.ts",
-        // Drizzle table declarations; FK/index shape asserted in schema.test.ts.
-        "!src/lib/schema.ts",
-        // libsql client bootstrap; resolveDbCredentials is covered by db.coverage.test.ts.
-        "!src/lib/db.ts",
-      ],
+  // Default list lives in scripts/ci-changed.mjs; partial CI sets STRYKER_MUTATE.
+  mutate: scopedMutate?.length ? scopedMutate : STRYKER_MUTATE,
   reporters: ["progress", "clear-text", "html"],
   thresholds: {
     high: 100,
