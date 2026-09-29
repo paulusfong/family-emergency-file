@@ -1,4 +1,5 @@
 import { ENTRY_TYPES, type EntryType } from "./schema";
+import { isValidPhoneNumber } from "libphonenumber-js/min";
 import { CREDENTIAL_ERROR, FULL_NUMBER_ERROR, findBlocked, isFormattedPhone } from "./privacy-warn";
 
 export type FieldKind = "text" | "textarea" | "last4" | "phone" | "email";
@@ -134,10 +135,15 @@ function blockedError(value: string) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** Characters a phone field may hold; libphonenumber-js then checks it is a valid number. */
-const PHONE_RE = /^\+?[\d\s().x-]+$/;
+/**
+ * Characters a phone field may hold; libphonenumber-js then checks it is a
+ * valid number. No letters or "#", so no extension ("x12", "ext. 12").
+ */
+const PHONE_RE = /^\+?[\d\s().-]+$/;
+/** Ten digits and nothing else: a US number typed without its separators. */
+const BARE_PHONE_RE = /^[0-9]{10}$/;
 export const PHONE_ERROR =
-  "Enter a phone number with its area code, like (404) 555-0123, or with + and the country code, like +44 20 7946 0958.";
+  "Enter a phone number with its area code and no extension, like (404) 555-0123, or with + and the country code, like +44 20 7946 0958.";
 
 function limitFor(kind: FieldKind) {
   return kind === "textarea" ? LIMITS.textarea : LIMITS.text;
@@ -155,11 +161,29 @@ function formatError(kind: FieldKind, value: string): string | null {
 /**
  * Every field, whatever its kind, goes through the shared block-level
  * privacy checks: a card number typed into Phone or Email is still a card
- * number. The privacy message wins over a format message.
+ * number. The privacy message wins over a format message, with one
+ * exception: a valid US number typed into Phone without separators
+ * ("4045550123") is a mistyped phone, so it gets the phone message. Any other
+ * digit run in Phone ("0001234567", "12345678901", "123 456 789") keeps the
+ * privacy message, as QA's corpora require. The value is rejected either way.
  */
 function checkField(def: FieldDef, value: string): string | null {
   if (value.length > limitFor(def.kind)) return `Keep this under ${limitFor(def.kind)} characters.`;
+  if (def.kind === "phone" && BARE_PHONE_RE.test(value) && isValidPhoneNumber(value, "US")) return PHONE_ERROR;
   return blockedError(value) ?? formatError(def.kind, value);
+}
+
+/**
+ * The toast line for a rejected save: the field and its message when one
+ * field is wrong ("Phone: Enter a phone number…"), else the fields' names.
+ */
+export function fieldErrorSummary(type: EntryType, fieldErrors: FieldErrors) {
+  const def = ENTRY_TYPE_DEFS[type];
+  const labelOf = (name: string) =>
+    name === "label" ? def.labelField.label : (def.fields.find((f) => f.name === name)?.label ?? name);
+  const names = Object.keys(fieldErrors);
+  if (names.length === 1) return `${labelOf(names[0])}: ${fieldErrors[names[0]]}`;
+  return `Fix these fields before this can save: ${names.map(labelOf).join(", ")}.`;
 }
 
 export type ValidatedEntry =

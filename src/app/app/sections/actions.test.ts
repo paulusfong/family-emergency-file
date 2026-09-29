@@ -12,6 +12,7 @@ import {
   revalidated,
 } from "../../../test/next-harness";
 import { applySchema } from "../../../test/apply-schema";
+import { PHONE_ERROR } from "../../../lib/entry-fields";
 
 const testdir = fs.mkdtempSync(path.join(os.tmpdir(), "fef-sections-"));
 process.env.DATABASE_URL = `file:${path.join(testdir, "t.sqlite")}`;
@@ -260,13 +261,23 @@ describe("sections: pages, entry CRUD, checklist, ownership", async () => {
       assert.deepEqual(res, {
         ok: false,
         status: 400,
-        error: "Some fields need a fix before this can save.",
+        error: "Fix these fields before this can save: Account nickname, Last 4 digits (optional), Notes.",
         fieldErrors: {
           label: "Account nickname is required.",
           last4: "Enter exactly 4 digits, or leave it blank.",
           notes: "This looks like a full account, card, or ID number. Store the last 4 digits at most.",
         },
       });
+      // One wrong field: the toast carries that field's own message.
+      assert.deepEqual(
+        await actions.saveEntry({
+          sectionKey: "S3",
+          entryType: "contact",
+          entryId: null,
+          values: { label: "Pat", phone: "(404) 555-01" },
+        }),
+        { ok: false, status: 400, error: `Phone: ${PHONE_ERROR}`, fieldErrors: { phone: PHONE_ERROR } },
+      );
       assert.deepEqual(
         await actions.saveEntry({ sectionKey: "S3", entryType: "password", entryId: null, values: { label: "x" } }),
         { ok: false, status: 400, error: "Unknown entry type." },
