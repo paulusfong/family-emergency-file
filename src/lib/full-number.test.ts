@@ -166,8 +166,9 @@ describe("findFullNumber: rule 1, Luhn-valid 13-19 digit runs, no exemptions", (
     assert.equal(findFullNumber("Box 7, 2019, 2020, 2021, 2004"), "full_number");
     assert.equal(findFullNumber("Box 7, +86 138 0013 8002"), "full_number");
     assert.equal(findFullNumber("Box 7, +86 138 0013 8000"), null);
-    // "ext" joins the 5 onto the phone's digits, which then fail Luhn.
-    assert.equal(findFullNumber("Box 7, +86 138 0013 8002 ext 5"), null);
+    // The phone's own digits are checked apart from its extension.
+    assert.equal(findFullNumber("Box 7, +86 138 0013 8002 ext 5"), "full_number");
+    assert.equal(findFullNumber("Box 7, +86 138 0013 8000 ext 5"), null);
   });
 
   it("checks every loose run for a card, not just the first", () => {
@@ -328,11 +329,13 @@ describe("findFullNumber: VINs", () => {
     for (const ok of [
       "1HGCM82633A004352",
       "JH4KA7561PC008269",
-      "AB123456789012345",
-      "ab123456789012345",
-      "Title: AB123456789012345.",
+      "ABCDEFGH712345678",
+      "abcdefgh712345678",
+      "Title: ABCDEFGH712345678.",
       "12345678X12345AB5",
       "AB000003X12345678",
+      // Two letters, and the 9-digit run starts at the check digit (position 9).
+      "1234567A21234567B",
     ]) {
       assert.equal(findFullNumber(ok), null, ok);
     }
@@ -352,17 +355,42 @@ describe("findFullNumber: VINs", () => {
     }
   });
 
+  it("blocks a valid-check-digit VIN shape when 9+ digits in a row start before position 9", () => {
+    for (const [bad, kind] of [
+      ["123456787ABCDEFGH", "ssn"],
+      ["VIN 123456787ABCDEFGH on the title", "ssn"],
+      ["AB123456789012345", "full_number"],
+      // The run starts at position 8 (index 7); ABCDEFGH712345678 starts it at 9 and passes.
+      ["ABCDEFG1312345678", "full_number"],
+    ] as const) {
+      assert.equal(hasVinCheckDigit(bad.replace(/^VIN | on the title$/g, "")), true, bad);
+      assert.equal(findFullNumber(bad), kind, bad);
+    }
+  });
+
+  it("needs two letters to set a VIN shape aside", () => {
+    // Valid check digits; 1234567A21234567B (two letters, same layout) passes.
+    for (const [bad, kind] of [
+      ["1234567A312345678", "ssn"],
+      ["3360585837343724R", "full_number"],
+      ["Car VIN 3360585837343724R, title in safe", "full_number"],
+    ] as const) {
+      assert.equal(hasVinCheckDigit(bad.replace(/^Car VIN |, title in safe$/g, "")), true, bad);
+      assert.equal(findFullNumber(bad), kind, bad);
+    }
+  });
+
   it("only sets aside the VIN shape, even when the check digit would validate", () => {
     for (const bad of [
-      "AB12345678901234",
-      "AB1234567890123456",
-      "AI123456889012345",
-      "AO123456889012345",
-      "AQ123456889012345",
+      "BCDEFGH712345678",
+      "ABCDEFGH7123456789",
+      "AICDEFGH812345678",
+      "AOCDEFGH812345678",
+      "AQCDEFGH812345678",
       "12345678712345678",
-      "ZAB123456789012345",
-      "1AB123456789012345",
-      "AB123456789012345C",
+      "ZABCDEFGH712345678",
+      "1ABCDEFGH712345678",
+      "ABCDEFGH712345678C",
     ]) {
       assert.notEqual(findFullNumber(bad), null, bad);
     }
@@ -577,5 +605,243 @@ describe("findFullNumber: phone extensions", () => {
     assert.equal(passesLuhn("2303092261144"), true);
     assert.equal(passesLuhn("492303092261144"), false);
     assert.equal(findFullNumber("+49 2303 0922 6114 4"), "full_number");
+    // Still checked alone when what follows cannot join (a street number).
+    assert.equal(findFullNumber("+49 2303 0922 6114 4, 12045 Main St"), "full_number");
+  });
+});
+
+/** Digits that make `prefix` + them Luhn-valid: zeros, then the one check digit that works. */
+function luhnTail(prefix: string, length: number) {
+  const zeros = "0".repeat(length - 1);
+  return zeros + [..."0123456789"].find((d) => passesLuhn(prefix + zeros + d))!;
+}
+
+/** Digits that make them + `suffix` Luhn-valid: the one leading digit that works, then zeros. */
+function luhnHead(suffix: string, length: number) {
+  const zeros = "0".repeat(length - 1);
+  return [..."0123456789"].find((d) => passesLuhn(d + zeros + suffix))! + zeros;
+}
+
+/** The same digits with the last one changed, so they fail Luhn. */
+const spoil = (digits: string) => digits.slice(0, -1) + ((Number(digits.at(-1)) + 1) % 10);
+
+const NAT = "4046835510";
+const PHONE = "(404) 683-5510";
+
+describe("findFullNumber: digits after a phone (tails)", () => {
+  it("joins a 5+ digit tail across each extension marker and separators", () => {
+    const tail = luhnTail(NAT, 6);
+    for (const marker of [
+      " x", " x ", " ext ", " EXT. ", " extn ", " extension ", " ex ", " no. ", " nr. ", " num ", " number ",
+      " anexo ", " ramal ", " int ", " interno ", " poste ", " durchwahl ", " доб. ", " / ", ", ", "; ", " #",
+      " ext no. ", " Extension: ", " extensión ", ";ext=", "\n",
+    ]) {
+      assert.equal(findFullNumber(PHONE + marker + tail), "full_number", JSON.stringify(marker));
+      assert.equal(findFullNumber(PHONE + marker + spoil(tail)), null, JSON.stringify(marker));
+    }
+  });
+
+  it("does not join across a word that is not an extension marker", () => {
+    const tail = luhnTail(NAT, 6);
+    for (const gap of [" Apt ", ", Atlanta GA ", " extra ", " xy ", " next ", " room "]) {
+      assert.equal(findFullNumber(PHONE + gap + tail), null, JSON.stringify(gap));
+    }
+  });
+
+  it("joins within 16 characters after the phone, not 17", () => {
+    const tail = luhnTail(NAT, 6);
+    assert.equal(findFullNumber(PHONE + " ".repeat(16) + tail), "full_number");
+    assert.equal(findFullNumber(PHONE + " ".repeat(17) + tail), null);
+  });
+
+  it("joins the whole next digit group", () => {
+    const tail = luhnTail(NAT, 6);
+    assert.equal(findFullNumber(`${PHONE} / ${tail}`), "full_number");
+    // Only the first group joins: 4046835510 + "1" + ... is not the card.
+    assert.equal(findFullNumber(`${PHONE} / 1 ${tail}`), null);
+  });
+
+  it("counts a tail of 5+ digits on its own, not a shorter one", () => {
+    assert.equal(findFullNumber(`${PHONE} x${luhnTail(NAT, 5)}`), "full_number");
+    assert.equal(findFullNumber(`${PHONE} x${luhnTail(NAT, 4)}`), null);
+    assert.equal(findFullNumber(`${PHONE} / ${luhnTail(NAT, 4)}`), null);
+    assert.equal(findFullNumber(`${PHONE} ext. ${luhnTail(NAT, 3)}`), null);
+  });
+
+  it("tries the digits as typed, with the country code, and the national number", () => {
+    // 1 + national + tail passes Luhn; national + tail does not, and the other way round.
+    const withCode = luhnTail(`1${NAT}`, 5);
+    assert.equal(passesLuhn(NAT + withCode), false);
+    assert.equal(findFullNumber(`+1 ${PHONE} x${withCode}`), "full_number");
+    assert.equal(findFullNumber(`+1 ${PHONE} / ${withCode}`), "full_number");
+    const national = luhnTail(NAT, 6);
+    assert.equal(passesLuhn(`1${NAT}${national}`), false);
+    assert.equal(findFullNumber(`+1 ${PHONE} x${national}`), "full_number");
+    assert.equal(findFullNumber(`1-404-683-5510 / ${national}`), "full_number");
+  });
+
+  it("reads a tail followed by a word as a street number, unless a marker comes before it", () => {
+    const tail = luhnTail(NAT, 5);
+    assert.equal(findFullNumber(`${PHONE}, ${tail} Main St`), null);
+    assert.equal(findFullNumber(`${PHONE}, ${tail}  Main St`), null);
+    assert.equal(findFullNumber(`${PHONE} x${tail} after 5pm`), "full_number");
+    assert.equal(findFullNumber(`${PHONE} ext no. ${tail} please`), "full_number");
+    assert.equal(findFullNumber(`${PHONE} #${tail} Main St`), "full_number");
+    // A single letter, or punctuation, after the tail is not a street name.
+    assert.equal(findFullNumber(`${PHONE}, ${tail} A`), "full_number");
+    assert.equal(findFullNumber(`${PHONE}, ${tail}, Main St`), "full_number");
+    assert.equal(findFullNumber(`${PHONE} / ${tail}; call after 5pm`), "full_number");
+  });
+
+  it("does not join a tail inside another set-aside token", () => {
+    const zip = luhnTail(NAT, 5);
+    assert.equal(findFullNumber(`${PHONE}, ${zip}`), "full_number");
+    assert.equal(findFullNumber(`${PHONE}, ${zip}-1234`), null);
+    const amount = luhnTail(NAT, 6);
+    assert.equal(findFullNumber(`${PHONE}, ${amount}.25`), null);
+    assert.equal(findFullNumber(`${PHONE}, $${amount}`), null);
+  });
+});
+
+describe("findFullNumber: digits before a phone (heads)", () => {
+  it("joins a 6+ digit head across 1-3 separators", () => {
+    const head = luhnHead(NAT, 6);
+    for (const gap of [" ", "-", " - ", ", ", "/"]) {
+      assert.equal(findFullNumber(head + gap + PHONE), "full_number", JSON.stringify(gap));
+      assert.equal(findFullNumber(spoil(head) + gap + PHONE), null, JSON.stringify(gap));
+    }
+  });
+
+  it("does not join a head across letters, 4+ separators, or nothing", () => {
+    const head = luhnHead(NAT, 6);
+    for (const gap of [" a ", " -- ", " Tel ", "    "]) {
+      assert.equal(findFullNumber(head + gap + PHONE), null, JSON.stringify(gap));
+    }
+    assert.equal(findFullNumber(`${head} then ${PHONE}`), null);
+  });
+
+  it("does not count a 5-digit head on its own (a ZIP)", () => {
+    assert.equal(findFullNumber(`Atlanta GA ${luhnHead(NAT, 5)} ${PHONE}`), null);
+    assert.equal(findFullNumber(`${luhnHead(NAT, 5)} ${PHONE}`), null);
+  });
+
+  it("joins a head even when a marker comes before a short tail", () => {
+    const head = luhnHead(NAT, 6);
+    assert.equal(findFullNumber(`${head} ${PHONE} x12`), "full_number");
+    assert.equal(findFullNumber(`${head} ${PHONE} ext. 12`), "full_number");
+  });
+
+  it("does not join a head inside another set-aside token", () => {
+    const head = luhnHead(NAT, 6);
+    assert.equal(findFullNumber(`$${head} ${PHONE}`), null);
+    assert.equal(findFullNumber(`12345-${luhnHead(NAT, 4)} ${PHONE}`), null);
+  });
+});
+
+describe("findFullNumber: digits on both sides of a phone", () => {
+  it("counts a head and plain-separated tail that add 6+ digits", () => {
+    // 43 522 825-0864 1826 style: 2 + 10 + 4 = 16 digits.
+    const tail = luhnTail(`12${NAT}`, 4);
+    assert.equal(findFullNumber(`12 ${PHONE} ${tail}`), "full_number");
+    assert.equal(findFullNumber(`12 ${PHONE} ${spoil(tail)}`), null);
+    const short = luhnTail(`12${NAT}`, 3);
+    assert.equal(findFullNumber(`12 ${PHONE} ${short}`), null);
+  });
+
+  it("does not join a head to a short tail after an extension marker", () => {
+    const tail = luhnTail(`210${NAT}`, 4);
+    assert.equal(findFullNumber(`210 ${PHONE} / ${tail}`), "full_number");
+    assert.equal(findFullNumber(`Suite 210, ${PHONE} ext. ${tail}`), null);
+    assert.equal(findFullNumber(`210 ${PHONE} #${tail}`), null);
+    assert.equal(findFullNumber(`210 ${PHONE} x${tail}`), null);
+  });
+
+  it("does not use one phone's digits as the next phone's head", () => {
+    const second = "3128675309";
+    const tail = luhnTail(`5510${second}`, 2);
+    assert.equal(findFullNumber(`${PHONE} / (312) 867-5309 ${tail}`), null);
+    assert.equal(findFullNumber(`5510 / (312) 867-5309 ${tail}`), "full_number");
+  });
+});
+
+describe("findFullNumber: which phones are set aside", () => {
+  it("finds a North American number that libphonenumber reads together with digits next to it", () => {
+    for (const ok of [
+      "Last visit 4/23/2013 - (770) 547-4454",
+      "Call (305) 945-6967 7674 Ponce de Leon Blvd",
+      "IL 60660-9493, 212-809-5080",
+      "Grandma, 9745 470 852 7491",
+      "TX 77078, 770 365 0135",
+      "Dana, 2019 +1 770.365.0135",
+      "Dana, 2019 1-770-365-0135",
+      "Dana, 2019 (770)365-0135",
+      "Dana, 2019 770365-0135",
+    ]) {
+      assert.equal(findFullNumber(ok), null, ok);
+    }
+  });
+
+  it("checks what a number found on its own could hide", () => {
+    // libphonenumber reads the date and the phone together here, so only the
+    // North American pass finds the phone; its national number joins the tail.
+    const tail = luhnTail(NAT, 6);
+    assert.equal(passesLuhn(`1${NAT}${tail}`), false);
+    assert.equal(findFullNumber(`4/23/2013 - +1 404-683-5510 / ${tail}`), "full_number");
+    assert.equal(findFullNumber(`4/23/2013 - 404-683-5510 / ${tail}`), "full_number");
+  });
+
+  it("finds each North American layout on its own, with or without +1", () => {
+    // libphonenumber reads the date and the phone together in all of these.
+    for (const ok of [
+      "4/23/2013 - (770)365-0135",
+      "4/23/2013 - 770365-0135",
+      "4/23/2013 - (770) 365-0135",
+      "4/23/2013 - 1(770) 365-0135",
+      // The 1 belongs to the phone; left out, "12345678 1" would be 9 digits.
+      "4/23/2013 - 12345678 1-770-365-0135",
+      "4/23/2013 - 12345678 1.770.365.0135",
+      "4/23/2013 - 12345678 1 770 365 0135",
+      "4/23/2013 - 12345678 1 (770) 365-0135",
+    ]) {
+      assert.equal(findFullNumber(ok), null, ok);
+    }
+    // The "1" is part of the phone, so 1 + national + tail is what gets checked.
+    const nat = "7703650135";
+    const tail = luhnTail(`1${nat}`, 5);
+    assert.equal(passesLuhn(nat + tail), false);
+    for (const prefix of ["+1(", "1-(", "1 (", "+1 (", "1("]) {
+      const v = `4/23/2013 - ${prefix}770) 365-0135 / ${tail}`;
+      assert.equal(findFullNumber(v), "full_number", v);
+    }
+    assert.equal(findFullNumber(`4/23/2013 - 1-770-365-0135 / ${tail}`), "full_number");
+  });
+
+  it("uses libphonenumber's US reading for layouts the North American pass does not know", () => {
+    assert.equal(findFullNumber("(404)-683-5510"), null);
+  });
+
+  it("does not set aside an invalid North American number", () => {
+    assert.equal(findFullNumber("(211) 234-5678"), "full_number");
+    assert.equal(findFullNumber("Dana, 2019 (123) 456-7890"), "full_number");
+  });
+
+  it("does not set aside a seven-digit local number, but does a short foreign one", () => {
+    // 58 840 3108304 9523 is a card; libphonenumber finds only "310-8304" in it.
+    assert.equal(passesLuhn("5884031083049523"), true);
+    assert.equal(findFullNumber("58 840 310-8304 9523"), "full_number");
+    assert.equal(findFullNumber("12 310-8304"), "ssn");
+    assert.equal(findFullNumber("Box 12 - 310-8304"), "ssn");
+    assert.equal(findFullNumber("+45 32 12 34 56"), null);
+  });
+});
+
+describe("findFullNumber: a leading country code on a card", () => {
+  it("also tries a loose run without a leading 1 written on its own", () => {
+    assert.equal(passesLuhn("14111111111111111"), false);
+    assert.equal(findFullNumber("1 a 4111 a 1111 a 1111 a 1111"), "full_number");
+    assert.equal(findFullNumber("1-4111a1111a1111a1111"), "full_number");
+    // Only a lone 1: "21" and "14111" are not country codes.
+    assert.equal(findFullNumber("2 a 4111 a 1111 a 1111 a 1111"), null);
+    assert.equal(findFullNumber("14111 a 1111 a 1111 a 111"), null);
   });
 });
