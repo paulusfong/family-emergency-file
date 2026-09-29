@@ -265,3 +265,72 @@ describe("pendingFindings", () => {
     assert.deepEqual(pendingFindings(fields, { last4: "123456789" }, {}), {});
   });
 });
+
+describe("rule boundaries", () => {
+  it("blocks exactly 19 grouped digits and allows 20", () => {
+    assert.equal(findFullNumber("12345678 1234 1234567"), "full_number");
+    assert.equal(findFullNumber("12345678 1234 12345678"), null);
+  });
+
+  it("finds a card number that starts after a short leading group", () => {
+    assert.equal(findFullNumber("12 1234 1234 1234 1"), "full_number");
+    assert.equal(findFullNumber("12 1234 5678"), null);
+    assert.equal(findFullNumber("1234 5678"), null);
+  });
+
+  it("returns null for text with no digits", () => {
+    assert.equal(findFullNumber("Example Bank, Main St branch"), null);
+  });
+
+  it("treats every pointer word after a secret label as a pointer", () => {
+    const words = ["in", "at", "on", "inside", "kept", "stored", "see", "ask", "printed"];
+    words.push("written", "saved", "held", "via", "under", "located", "lives");
+    const flagged = words.filter((w) => level(`password: ${w.toUpperCase()} the family vault`) !== null);
+    assert.deepEqual(flagged, []);
+    assert.equal(level("password: somewhere"), "warn");
+  });
+
+  it("reads PIN and card codes written with no space", () => {
+    assert.equal(level("pin1234"), "warn");
+    assert.equal(level("cvv123"), "warn");
+    assert.equal(level("pinx1234"), null);
+    assert.equal(level("cvvx123"), null);
+  });
+
+  it("strips only leading and trailing punctuation, however much there is", () => {
+    assert.equal(level("a1(b2c3d"), "warn");
+    assert.equal(level("((a1b2c3d"), null);
+    assert.equal(level("a1b2c3d.."), null);
+  });
+
+  it("only skips a token when the whole token is an email, URL, or domain", () => {
+    assert.equal(level("Pa55@@me@example.com"), "warn");
+    assert.equal(level("user@example.comX9!pw"), "warn");
+    assert.equal(level("Tr0ub&www.example"), "warn");
+    assert.equal(level("Tr0ub&4dor.com"), "warn");
+    assert.equal(level("example.comTr0ub&4"), "warn");
+  });
+
+  it("does not count upper-case-only codes as mixed case", () => {
+    assert.equal(looksLikeSecretToken("ABCD1234"), false);
+    assert.equal(looksLikeSecretToken("abcd1234"), false);
+  });
+
+  it("warns at exactly the entropy thresholds", () => {
+    assert.equal(entropyPerChar("aaBB1234"), 2.5);
+    assert.equal(looksLikeSecretToken("aaBB1234"), true);
+    const hexish = "aaaaaaaabbbbbbbb0123456789cdefgh";
+    assert.equal(entropyPerChar(hexish), 3.5);
+    assert.equal(looksLikeSecretToken(hexish), true);
+  });
+
+  it("needs 20 characters before a same-case token counts on entropy alone", () => {
+    assert.equal(entropyPerChar("abcdef123456") > 3.5, true);
+    assert.equal(looksLikeSecretToken("abcdef123456"), false);
+  });
+
+  it("does not scan email fields, even when the text would warn elsewhere", () => {
+    assert.equal(scanField("text", "pin1234@example.com")?.level, "warn");
+    assert.equal(scanField("email", "pin1234@example.com"), null);
+  });
+});

@@ -36,18 +36,18 @@ function isPhoneShaped(run: string) {
  * side by side does not match.
  */
 function hasGroupedCardNumber(text: string) {
-  for (const run of text.match(DIGIT_RUN_RE) ?? []) {
+  return [...text.matchAll(DIGIT_RUN_RE)].some(([run]) => {
     const groups = run.split(/[ -]/);
-    for (let start = 0; start < groups.length; start++) {
+    return groups.some((_, start) => {
       let digits = 0;
-      for (let end = start; end < groups.length; end++) {
-        digits += groups[end].length;
+      for (const group of groups.slice(start)) {
+        digits += group.length;
         if (digits >= 13 && digits <= 19) return true;
-        if (groups[end].length < 4) break;
+        if (group.length < 4) return false;
       }
-    }
-  }
-  return false;
+      return false;
+    });
+  });
 }
 
 /** Full account, card, or SSN shapes. */
@@ -123,7 +123,7 @@ export function scanText(text: string): PrivacyFinding | null {
   const full = findFullNumber(text);
   if (full) return { level: "block", reason: full, message: FULL_NUMBER_ERROR };
   if (hasSecretLabel(text)) return { level: "warn", reason: "secret_label", message: SECRET_WARNING };
-  if (text.split(/\s+/).some(looksLikeSecretToken)) {
+  if (text.split(/\s/).some(looksLikeSecretToken)) {
     return { level: "warn", reason: "secret_token", message: SECRET_WARNING };
   }
   return null;
@@ -149,7 +149,8 @@ export function pendingFindings(
 ): Record<string, PrivacyFinding> {
   const out: Record<string, PrivacyFinding> = {};
   for (const { name, kind } of fields) {
-    const value = values[name] ?? "";
+    const value = values[name];
+    if (!value) continue;
     const finding = scanField(kind, value);
     if (!finding) continue;
     if (finding.level === "warn" && confirmed[name] === value) continue;
