@@ -314,7 +314,7 @@ function tightRunHidesCard(text: string, phones: FoundPhone[], aside: boolean[])
   const glued = text
     .split("")
     .map((ch, i) => {
-      if (!inPhone[i]) return aside[i] ? "Z" : ch;
+      if (!inPhone[i]) return aside[i] ? MASK : ch;
       if (DIGIT_CHAR_RE.test(ch)) return ch;
       if (ch === "+") return "Z";
       // One "-" after each digit group inside the phone; its other separators ("(", ") ") drop out.
