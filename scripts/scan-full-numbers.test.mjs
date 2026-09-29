@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { createClient } from "@libsql/client";
 import { applySchema } from "../src/test/apply-schema.ts";
-import { DEFAULT_DATABASE_URL, main, resolveTarget, scanRows } from "./scan-full-numbers.mjs";
+import { DEFAULT_DATABASE_URL, main, rawFindings, resolveTarget, scanRows } from "./scan-full-numbers.mjs";
 
 const SECRETS = {
   card: "4111 1111 1111 1111",
@@ -23,6 +23,8 @@ const rows = [
   { id: "e-bare", entry_type: "contact", label: "Sam", payload_json: JSON.stringify({ phone: SECRETS.bare }) },
   { id: "e-type", entry_type: "password_vault", label: "Old row", payload_json: "{}" },
   { id: "e-json", entry_type: "note", label: "Broken payload", payload_json: "{not json" },
+  { id: "e-hidden", entry_type: "note", label: "Old field", payload_json: JSON.stringify({ cardNumber: SECRETS.card }) },
+  { id: "e-num", entry_type: "account", label: "Numeric", payload_json: '{"last4":4111111111111111}' },
 ];
 
 async function makeDb(withRows) {
@@ -85,20 +87,67 @@ describe("scan-full-numbers: resolveTarget", () => {
 });
 
 describe("scan-full-numbers: scanRows", () => {
-  it("names the id and field of every validateEntry failure", () => {
+  it("names the id and field of every finding: raw payload first, then validateEntry", () => {
     assert.deepEqual(scanRows(rows), [
+      { id: "e-card", field: "payload_json" },
       { id: "e-card", field: "notes" },
       { id: "e-ssn", field: "label" },
+      { id: "e-phone", field: "payload_json" },
       { id: "e-phone", field: "phone" },
       { id: "e-phone", field: "notes" },
+      { id: "e-bare", field: "payload_json" },
       { id: "e-bare", field: "phone" },
       { id: "e-type", field: "entry_type" },
+      { id: "e-json", field: "payload_json:unparseable" },
+      { id: "e-hidden", field: "payload_json" },
+      { id: "e-num", field: "payload_json" },
+      { id: "e-num", field: "last4:non-string" },
+    ]);
+  });
+
+  it("scans the raw payload of a row with an unknown entry type", () => {
+    assert.deepEqual(scanRows([{ id: "t", entry_type: "vault", label: "x", payload_json: '{"pin":[123,45,6789]}' }]), [
+      { id: "t", field: "payload_json" },
+      { id: "t", field: "payload_json:non-string" },
+      { id: "t", field: "entry_type" },
+    ]);
+  });
+
+  it("names each raw finding once per row", () => {
+    assert.deepEqual(scanRows([{ id: "d", entry_type: "note", label: "x", payload_json: '{"a":1,"b":2}' }]), [
+      { id: "d", field: "payload_json:non-string" },
     ]);
   });
 
   it("returns nothing for clean rows", () => {
     assert.deepEqual(scanRows([rows[0]]), []);
     assert.deepEqual(scanRows([]), []);
+  });
+});
+
+describe("scan-full-numbers: rawFindings", () => {
+  it("flags a full number anywhere in the raw text, even under a key the app drops", () => {
+    assert.deepEqual(rawFindings("note", JSON.stringify({ notes: `Card ${SECRETS.card}` })), ["payload_json"]);
+    assert.deepEqual(rawFindings("note", JSON.stringify({ oldNotes: SECRETS.ssn })), ["payload_json"]);
+    assert.deepEqual(rawFindings("note", '{"notes":"Room 12, Box 30301"}'), []);
+    assert.deepEqual(rawFindings("account", '{"institution":"Example Bank","last4":"1111","whereToFind":"Safe 2019"}'), []);
+  });
+
+  it("flags text that is not JSON, or not a JSON object", () => {
+    assert.deepEqual(rawFindings("note", "{not json"), ["payload_json:unparseable"]);
+    assert.deepEqual(rawFindings("note", `{not json ${SECRETS.card}`), ["payload_json", "payload_json:unparseable"]);
+    assert.deepEqual(rawFindings("note", "null"), ["payload_json:not-an-object"]);
+    assert.deepEqual(rawFindings("note", "7"), ["payload_json:not-an-object"]);
+    assert.deepEqual(rawFindings("note", JSON.stringify([SECRETS.card])), ["payload_json", "payload_json:not-an-object"]);
+    assert.deepEqual(rawFindings("note", "{}"), []);
+  });
+
+  it("flags non-string values that hold digits, by field name only when the type defines it", () => {
+    assert.deepEqual(rawFindings("account", '{"last4":1234}'), ["last4:non-string"]);
+    assert.deepEqual(rawFindings("note", '{"notes":["12"]}'), ["notes:non-string"]);
+    assert.deepEqual(rawFindings("note", '{"secret99":{"n":12}}'), ["payload_json:non-string"]);
+    assert.deepEqual(rawFindings("vault", '{"notes":12}'), ["payload_json:non-string"]);
+    assert.deepEqual(rawFindings("note", '{"notes":true,"label":null,"x":["a"]}'), []);
   });
 });
 
@@ -109,16 +158,23 @@ describe("scan-full-numbers: main", () => {
     assert.equal(code, 1);
     assert.deepEqual(err, []);
     assert.deepEqual(out, [
+      "e-bare\tpayload_json",
       "e-bare\tphone",
+      "e-card\tpayload_json",
       "e-card\tnotes",
+      "e-hidden\tpayload_json",
+      "e-json\tpayload_json:unparseable",
+      "e-num\tpayload_json",
+      "e-num\tlast4:non-string",
+      "e-phone\tpayload_json",
       "e-phone\tphone",
       "e-phone\tnotes",
       "e-ssn\tlabel",
       "e-type\tentry_type",
-      "Scanned 7 entries: 5 failed validateEntry (6 fields).",
+      "Scanned 9 entries: 8 flagged (13 findings).",
     ]);
     const printed = out.join("\n");
-    for (const secret of [...Object.values(SECRETS), "hunter2", "4111", "373597", "Joint checking", "Example Bank"]) {
+    for (const secret of [...Object.values(SECRETS), "hunter2", "4111", "373597", "Joint checking", "Example Bank", "cardNumber"]) {
       assert.equal(printed.includes(secret), false, secret);
     }
   });
@@ -127,7 +183,7 @@ describe("scan-full-numbers: main", () => {
     const file = await makeDb([rows[0]]);
     assert.deepEqual(await run({ DATABASE_URL: `file:${file}` }), {
       code: 0,
-      out: ["Scanned 1 entries: 0 failed validateEntry (0 fields)."],
+      out: ["Scanned 1 entries: 0 flagged (0 findings)."],
       err: [],
     });
   });
