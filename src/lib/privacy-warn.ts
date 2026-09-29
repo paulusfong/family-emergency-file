@@ -135,3 +135,25 @@ const UNSCANNED_KINDS = new Set(["last4", "email", "phone"]);
 export function scanField(kind: string, value: string): PrivacyFinding | null {
   return UNSCANNED_KINDS.has(kind) ? null : scanText(value);
 }
+
+/**
+ * Findings that should hold an autosave, by field name. Block-level findings
+ * always hold. A warn-level finding holds until the person confirms that
+ * exact value is not a secret (confirmed[name] === value); editing the field
+ * again re-checks it.
+ */
+export function pendingFindings(
+  fields: readonly { name: string; kind: string }[],
+  values: Record<string, string | undefined>,
+  confirmed: Record<string, string>,
+): Record<string, PrivacyFinding> {
+  const out: Record<string, PrivacyFinding> = {};
+  for (const { name, kind } of fields) {
+    const value = values[name] ?? "";
+    const finding = scanField(kind, value);
+    if (!finding) continue;
+    if (finding.level === "warn" && confirmed[name] === value) continue;
+    out[name] = finding;
+  }
+  return out;
+}

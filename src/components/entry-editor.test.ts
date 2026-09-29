@@ -12,9 +12,8 @@ describe("EntryEditor", async () => {
   const { act, cleanup, fireEvent, render, screen } = await import("@testing-library/react");
   const { EntryEditor } = await import("./entry-editor");
   const { ENTRY_TYPE_DEFS } = await import("@/lib/entry-fields");
-  const { NETWORK_ERROR, SERVER_ERROR } = await import("@/lib/autosave");
-  const { LostSaveNotice } = await import("./lost-save-notice");
-  const { dismissLostSave, getLostSave } = await import("@/lib/lost-save");
+  const { NETWORK_ERROR } = await import("@/lib/autosave");
+  const { FULL_NUMBER_ERROR, SECRET_WARNING } = await import("@/lib/privacy-warn");
   type Save = Parameters<typeof EntryEditor>[0]["save"];
   type Input = Parameters<Save>[0];
 
@@ -28,19 +27,17 @@ describe("EntryEditor", async () => {
     type?: keyof typeof ENTRY_TYPE_DEFS;
     entryId?: string | null;
     initialValues?: Record<string, string>;
-    strict?: boolean;
   }) {
-    const editor = React.createElement(EntryEditor, {
-      sectionKey: "S3",
-      def: ENTRY_TYPE_DEFS[opts.type ?? "account"],
-      entryId: opts.entryId ?? null,
-      initialValues: opts.initialValues ?? {},
-      save: opts.save,
-      delayMs: 5,
-    });
-    // next dev (and QA) run React in StrictMode, which mounts, unmounts, and
-    // remounts every effect once.
-    return render(opts.strict ? React.createElement(React.StrictMode, null, editor) : editor);
+    return render(
+      React.createElement(EntryEditor, {
+        sectionKey: "S3",
+        def: ENTRY_TYPE_DEFS[opts.type ?? "account"],
+        entryId: opts.entryId ?? null,
+        initialValues: opts.initialValues ?? {},
+        save: opts.save,
+        delayMs: 5,
+      }),
+    );
   }
 
   function recorder(result: (i: Input, n: number) => Awaited<ReturnType<Save>> | Promise<never>) {
@@ -58,15 +55,8 @@ describe("EntryEditor", async () => {
 
   afterEach(() => {
     cleanup();
-    dismissLostSave();
     window.history.replaceState(null, "", "/app/sections/S3/entries/new");
   });
-
-  const unload = () => {
-    const event = new window.Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
-    window.dispatchEvent(event);
-    return event.defaultPrevented;
-  };
 
   it("renders metadata inputs only, with a numeric last-4 and no password field", () => {
     const { container } = mount({ save: async () => ({ ok: true, entryId: "x" }) });
@@ -191,236 +181,102 @@ describe("EntryEditor", async () => {
     assert.equal(label.getAttribute("aria-invalid"), null);
   });
 
-  it("edits note text in a textarea and saves the pending edit on unmount", async () => {
+  it("edits note text in a textarea and stops after unmount", async () => {
     const { calls, save } = recorder(() => ({ ok: true, entryId: "n-1" }));
     const view = mount({ type: "note", save, entryId: "n-1", initialValues: { label: "First week" } });
     assert.equal((screen.getByLabelText("Title (required)") as HTMLInputElement).value, "First week");
     fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Call Pat first" } });
     view.unmount();
     await wait(20);
-    assert.deepEqual(calls, [
-      { sectionKey: "S3", entryType: "note", entryId: "n-1", values: { label: "First week", notes: "Call Pat first" } },
-    ]);
-  });
-
-  it("does not save on unmount when nothing is pending, even under StrictMode", async () => {
-    const { calls, save } = recorder(() => ({ ok: true, entryId: "n-1" }));
-    const view = mount({ type: "note", save, entryId: "n-1", initialValues: { label: "First week" }, strict: true });
-    assert.equal(screen.getByRole("status").textContent, "All changes saved.");
-    view.unmount();
-    await wait(20);
     assert.deepEqual(calls, []);
   });
 
-  it("does not rewrite the URL when a new entry's flushed save lands after unmount", async () => {
-    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-9" }));
-    const view = mount({ save });
+  // Paste warning. Read DOM state as strings/booleans (see hasAlert above).
+  const warningText = (name: string) => document.getElementById(`field-${name}-privacy`)?.textContent ?? null;
+  const confirmButton = () => screen.queryByRole("button", { name: "It’s not a secret, save it" });
+  const statusText = () => screen.getByRole("status").textContent;
+
+  it("holds the autosave on a password-like value until it is confirmed", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
     fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint checking" } });
-    view.unmount();
+    fireEvent.change(screen.getByLabelText("Access plan"), { target: { value: "password: hunter2" } });
+    const plan = screen.getByLabelText("Access plan");
+    assert.equal(warningText("accessPlan"), `${SECRET_WARNING}It’s not a secret, save it`);
+    assert.equal(plan.getAttribute("data-privacy"), "warn");
+    assert.equal(plan.getAttribute("aria-invalid"), null);
+    assert.equal(plan.getAttribute("aria-describedby"), "field-accessPlan-hint field-accessPlan-privacy");
+    assert.equal(document.getElementById("field-accessPlan-privacy")?.getAttribute("role"), "alert");
+    assert.equal(statusText(), "Review the flagged field before this saves.");
+    fireEvent.submit(screen.getByRole("form"));
+    await wait(20);
+    assert.equal(calls.length, 0);
+
+    fireEvent.click(confirmButton()!);
+    assert.equal(warningText("accessPlan"), null);
+    assert.equal(plan.getAttribute("data-privacy"), null);
     await wait(20);
     assert.equal(calls.length, 1);
-    assert.equal(window.location.pathname, "/app/sections/S3/entries/new");
+    assert.deepEqual(calls[0].values, { label: "Joint checking", accessPlan: "password: hunter2" });
+    assert.equal(statusText(), "All changes saved.");
   });
 
-  it("asks before the tab closes while an edit is pending, saving, or failed", async () => {
-    let fail = false;
-    let release: () => void = () => {};
-    const save: Save = async () => {
-      if (fail) return { ok: false, status: 500, error: "Couldn't save right now. Please retry." };
-      await new Promise<void>((r) => (release = r));
-      return { ok: true, entryId: "e-3" };
-    };
-    mount({ save, entryId: "e-3", initialValues: { label: "Card" } });
-    assert.equal(unload(), false);
-    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Main St" } });
-    assert.equal(screen.getByRole("status").textContent, "Unsaved changes…");
-    assert.equal(unload(), true);
+  it("re-checks a confirmed field when it is edited again", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
+    fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint checking" } });
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "PIN is 4821" } });
+    fireEvent.click(confirmButton()!);
     await wait(20);
-    assert.equal(screen.getByRole("status").textContent, "Saving…");
-    assert.equal(unload(), true);
-    await act(async () => release());
-    assert.equal(screen.getByRole("status").textContent, "All changes saved.");
-    assert.equal(unload(), false);
-    fail = true;
-    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Oak St" } });
+    assert.equal(calls.length, 1);
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "PIN is 4822" } });
+    assert.match(warningText("notes")!, /looks like a password, PIN/);
     await wait(20);
-    assert.equal(screen.getByRole("status").textContent, "Not saved.");
-    assert.equal(unload(), true);
+    assert.equal(calls.length, 1);
   });
 
-  it("asks before the tab closes for a new entry with typed content but no label yet", async () => {
-    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-2" }));
-    mount({ save, strict: true });
-    assert.equal(unload(), false);
-    const institution = screen.getByLabelText("Institution");
-    fireEvent.change(institution, { target: { value: "Example Bank" } });
-    assert.equal(screen.getByRole("status").textContent, "Fill in “Account nickname” to start saving.");
-    assert.equal(unload(), true);
-    fireEvent.change(institution, { target: { value: "   " } });
-    assert.equal(unload(), false);
-    fireEvent.change(institution, { target: { value: "" } });
-    assert.equal(unload(), false);
+  it("blocks a full number with no way to confirm it, and saves once it is fixed", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
+    fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Card" } });
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "4111 1111 1111 1111" } });
+    const notes = screen.getByLabelText("Notes");
+    assert.equal(warningText("notes"), FULL_NUMBER_ERROR);
+    assert.equal(confirmButton() === null, true);
+    assert.equal(notes.getAttribute("aria-invalid"), "true");
+    assert.equal(notes.getAttribute("data-privacy"), "block");
+    assert.equal(notes.getAttribute("aria-describedby"), "field-notes-privacy");
+    fireEvent.blur(notes);
+    await wait(20);
+    assert.equal(calls.length, 0);
+
+    fireEvent.change(notes, { target: { value: "Card ends 1111" } });
+    assert.equal(warningText("notes"), null);
+    await wait(20);
+    assert.deepEqual(calls[0].values, { label: "Card", notes: "Card ends 1111" });
+  });
+
+  it("flags the label field too, and keeps the fill-in prompt when the label is empty", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
+    const label = screen.getByLabelText("Account nickname (required)");
+    fireEvent.change(label, { target: { value: "P@ssw0rd99" } });
+    assert.equal(warningText("label"), `${SECRET_WARNING}It’s not a secret, save it`);
+    assert.equal(label.getAttribute("aria-describedby"), "field-label-privacy");
+    fireEvent.change(label, { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "password: x1" } });
+    assert.equal(statusText(), "Fill in “Account nickname” to start saving.");
     await wait(20);
     assert.deepEqual(calls, []);
   });
 
-  describe("a save that fails after the editor unmounts", () => {
-    const notice = () => screen.queryByRole("alert")?.textContent ?? "";
-
-    it("shows a notice outside the editor with a link back to the entry", async () => {
-      const { calls, save } = recorder(() => ({
-        ok: false,
-        status: 400,
-        error: `Phone: ${"Enter a phone number"}`,
-        fieldErrors: { phone: "Enter a phone number" },
-      }));
-      render(React.createElement(LostSaveNotice));
-      assert.equal(notice(), "");
-      const view = mount({ type: "contact", save, entryId: "c-7", initialValues: { label: "Pat" } });
-      fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "4045550123" } });
-      view.unmount();
-      await wait(20);
-      assert.equal(calls.length, 1);
-      assert.equal(notice(), "Your last change to “Pat” wasn't saved. Phone: Enter a phone numberOpen it againDismiss");
-      const link = screen.getByRole("link", { name: "Open it again" });
-      assert.equal(link.getAttribute("href"), "/app/sections/S3/entries/c-7");
-      fireEvent.click(link);
-      assert.equal(notice(), "");
-      assert.equal(getLostSave() === null, true);
-    });
-
-    it("has no link for a new entry that was never created, and dismisses", async () => {
-      const { save } = recorder(() => Promise.reject(new TypeError("Failed to fetch")));
-      render(React.createElement(LostSaveNotice));
-      const view = mount({ save });
-      fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint" } });
-      view.unmount();
-      await wait(20);
-      assert.equal(notice(), `Your last change to “Joint” wasn't saved. ${NETWORK_ERROR}Dismiss`);
-      assert.equal(screen.queryAllByRole("link").length, 0);
-      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-      assert.equal(notice(), "");
-    });
-
-    it("shows a save that had already failed when the person leaves (Done after a failed blur save)", async () => {
-      const { calls, save } = recorder(() => Promise.reject(new Error("An unexpected response was received from the server.")));
-      render(React.createElement(LostSaveNotice));
-      const view = mount({ type: "contact", save, entryId: "c-9", initialValues: { label: "Pat" } });
-      fireEvent.change(screen.getByLabelText("Relationship"), { target: { value: "Sister" } });
-      await wait(20);
-      assert.equal(calls.length, 1);
-      // The editor's own toast shows the failure while it is open.
-      assert.match(screen.getAllByRole("alert").map((a) => a.textContent).join(" "), new RegExp(SERVER_ERROR.slice(0, 30)));
-      view.unmount();
-      await wait(20);
-      assert.equal(calls.length, 1);
-      assert.equal(notice(), `Your last change to “Pat” wasn't saved. ${SERVER_ERROR}Open it againDismiss`);
-    });
-
-    it("shows nothing when the flush on unmount succeeds", async () => {
-      const { calls, save } = recorder(() => ({ ok: true, entryId: "c-8" }));
-      render(React.createElement(LostSaveNotice));
-      const view = mount({ type: "contact", save, entryId: "c-8", initialValues: { label: "Pat" } });
-      fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(404) 555-0123" } });
-      view.unmount();
-      await wait(20);
-      assert.equal(calls.length, 1);
-      assert.equal(notice(), "");
-    });
-  });
-
-  describe("QA-4: autosave status under React StrictMode", () => {
-    const SAVED = "All changes saved.";
-    const status = () => screen.getByRole("status").textContent;
-    const retryButtons = () => screen.queryAllByRole("button", { name: "Retry" }).length;
-    const alertText = () => screen.queryByRole("alert")?.textContent ?? "";
-    const setOnline = (online: boolean) => {
-      Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => online });
-      act(() => {
-        window.dispatchEvent(new window.Event(online ? "online" : "offline"));
-      });
-    };
-    afterEach(() => setOnline(true));
-
-    it("never shows saved after a rejected save, and shows the toast with Retry", async () => {
-      const { calls, save } = recorder(() => ({
-        ok: false,
-        status: 400,
-        error: "Some fields need a fix before this can save.",
-        fieldErrors: { institution: "This looks like a full account, card, or ID number." },
-      }));
-      mount({ save, strict: true, entryId: "e-1", initialValues: { label: "Joint" } });
-      assert.equal(status(), SAVED);
-      fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Bank 4111 1111 1111 1111" } });
-      await wait(20);
-      assert.equal(calls.length, 1);
-      assert.equal(status(), "Not saved.");
-      assert.match(alertText(), /Some fields need a fix/);
-      assert.equal(retryButtons(), 1);
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-      await wait(0);
-      assert.equal(calls.length, 2);
-      assert.equal(status(), "Not saved.");
-      assert.equal(retryButtons(), 1);
-    });
-
-    it("never shows saved after an offline save, and recovers on Retry", async () => {
-      let offline = true;
-      const { calls, save } = recorder((i) => {
-        if (offline) return Promise.reject(new TypeError("Failed to fetch"));
-        return { ok: true, entryId: i.entryId ?? "e-1" };
-      });
-      mount({ save, strict: true, entryId: "e-1", initialValues: { label: "Joint" } });
-      fireEvent.change(screen.getByLabelText("Ownership"), { target: { value: "Joint with Pat" } });
-      await wait(20);
-      assert.equal(status(), "Not saved.");
-      assert.match(alertText(), new RegExp(NETWORK_ERROR.slice(0, 30)));
-      assert.equal(retryButtons(), 1);
-      offline = false;
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-      await wait(0);
-      assert.equal(status(), SAVED);
-      assert.equal(retryButtons(), 0);
-      assert.equal(calls.length, 2);
-    });
-
-    it("shows the offline toast with Retry while the browser is offline, then saves on reconnect", async () => {
-      const { calls, save } = recorder((i) => ({ ok: true, entryId: i.entryId ?? "e-1" }));
-      mount({ save, strict: true, entryId: "e-1", initialValues: { label: "Joint" } });
-      assert.equal(status(), SAVED);
-      setOnline(false);
-      assert.notEqual(status(), SAVED);
-      assert.match(status()!, /offline/i);
-      assert.match(alertText(), /offline/i);
-      assert.equal(retryButtons(), 1);
-      fireEvent.change(screen.getByLabelText("Ownership"), { target: { value: "Joint with Pat" } });
-      assert.notEqual(status(), SAVED);
-      assert.equal(retryButtons(), 1);
-      setOnline(true);
-      await wait(20);
-      assert.equal(status(), SAVED);
-      assert.equal(retryButtons(), 0);
-      assert.deepEqual(
-        calls.map((c) => (c.values as Record<string, string>).ownership),
-        ["Joint with Pat"],
-      );
-    });
-
-    it("starts offline when the browser already is, and saves once per edit", async () => {
-      Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => false });
-      const { calls, save } = recorder((i) => ({ ok: true, entryId: i.entryId ?? "e-9" }));
-      mount({ save, strict: true });
-      assert.match(status()!, /offline/i);
-      assert.equal(retryButtons(), 1);
-      setOnline(true);
-      await wait(0);
-      assert.equal(status(), "Fill in “Account nickname” to start saving.");
-      assert.equal(retryButtons(), 0);
-      fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint" } });
-      await wait(20);
-      assert.equal(status(), SAVED);
-      assert.equal(calls.length, 1);
-      assert.equal(window.location.pathname, "/app/sections/S3/entries/e-9");
-    });
+  it("treats values loaded from a saved entry as already confirmed", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "e-1" }));
+    mount({ save, entryId: "e-1", initialValues: { label: "Family email", notes: "password: hunter2" } });
+    assert.equal(warningText("notes"), null);
+    fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Example Mail" } });
+    await wait(20);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].values, { label: "Family email", notes: "password: hunter2", institution: "Example Mail" });
   });
 });

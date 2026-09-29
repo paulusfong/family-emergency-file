@@ -6,6 +6,7 @@ import {
   entropyPerChar,
   findFullNumber,
   looksLikeSecretToken,
+  pendingFindings,
   scanField,
   scanText,
 } from "./privacy-warn";
@@ -230,5 +231,37 @@ describe("scanField", () => {
     assert.equal(scanField("text", "123456789")?.level, "block");
     assert.equal(scanField("textarea", "password: hunter2")?.level, "warn");
     assert.equal(scanField("text", "Example Bank"), null);
+  });
+});
+
+describe("pendingFindings", () => {
+  const fields = [
+    { name: "label", kind: "text" },
+    { name: "last4", kind: "last4" },
+    { name: "notes", kind: "textarea" },
+  ];
+
+  it("reports block and warn findings per field", () => {
+    assert.deepEqual(pendingFindings(fields, { label: "Acct 123456789", notes: "password: hunter2" }, {}), {
+      label: { level: "block", reason: "ssn", message: FULL_NUMBER_ERROR },
+      notes: { level: "warn", reason: "secret_label", message: SECRET_WARNING },
+    });
+  });
+
+  it("releases a warning once that exact value is confirmed, and re-checks edits", () => {
+    const values = { label: "Email", notes: "password: hunter2" };
+    assert.deepEqual(pendingFindings(fields, values, { notes: "password: hunter2" }), {});
+    assert.deepEqual(Object.keys(pendingFindings(fields, { ...values, notes: "password: hunter3" }, { notes: "password: hunter2" })), [
+      "notes",
+    ]);
+  });
+
+  it("never releases a block, even if confirmed", () => {
+    const values = { label: "Card", notes: "4111 1111 1111 1111" };
+    assert.deepEqual(Object.keys(pendingFindings(fields, values, { notes: values.notes })), ["notes"]);
+  });
+
+  it("treats missing values as empty and skips unscanned kinds", () => {
+    assert.deepEqual(pendingFindings(fields, { last4: "123456789" }, {}), {});
   });
 });
