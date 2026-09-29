@@ -9,6 +9,7 @@ import {
   account,
   checklistItems,
   entries,
+  exportEvents,
   householdFiles,
   sections,
   session,
@@ -30,7 +31,7 @@ function fkTargets(table: Parameters<typeof getTableConfig>[0]) {
 describe("schema", () => {
   it("names the tables better-auth and the domain expect", () => {
     assert.deepEqual(
-      [user, session, account, verification, householdFiles, sections, entries, checklistItems].map(
+      [user, session, account, verification, householdFiles, sections, entries, checklistItems, exportEvents].map(
         (t) => getTableConfig(t).name,
       ),
       [
@@ -42,6 +43,7 @@ describe("schema", () => {
         "sections",
         "entries",
         "checklist_items",
+        "export_events",
       ],
     );
   });
@@ -60,6 +62,9 @@ describe("schema", () => {
     ]);
     assert.deepEqual(fkTargets(checklistItems), [
       { from: "section_id", to: "sections.id", onDelete: "cascade" },
+    ]);
+    assert.deepEqual(fkTargets(exportEvents), [
+      { from: "household_file_id", to: "household_files.id", onDelete: "cascade" },
     ]);
   });
 
