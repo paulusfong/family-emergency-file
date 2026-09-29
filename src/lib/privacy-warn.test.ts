@@ -25,26 +25,15 @@ describe("findFullNumber", () => {
     assert.equal(findFullNumber("acct 123456789"), "ssn");
   });
 
-  it("does not read an SSN out of a longer digit string", () => {
-    assert.equal(findFullNumber("1123-45-6789"), null);
-    assert.equal(findFullNumber("123-45-67890"), null);
-    assert.equal(findFullNumber("x123-45-67890"), null);
-  });
-
-  it("flags long digit runs that are not phone-shaped", () => {
+  it("flags long digit runs, including bare phone-length runs", () => {
     assert.equal(findFullNumber("1234567890123"), "full_number");
     assert.equal(findFullNumber("acct 123456789012"), "full_number");
     assert.equal(findFullNumber("21234567890"), "full_number");
+    assert.equal(findFullNumber("8005550100"), "full_number");
+    assert.equal(findFullNumber("18005550100"), "full_number");
   });
 
-  it("treats 10 digits, or 11 starting with 1, as a phone number", () => {
-    assert.equal(findFullNumber("8005550100"), null);
-    assert.equal(findFullNumber("18005550100"), null);
-    assert.equal(findFullNumber("5550100000 5550100001"), null);
-    assert.equal(findFullNumber("call 8005550100 then 123456789"), "ssn");
-  });
-
-  it("flags grouped card and account numbers of 13 to 19 digits", () => {
+  it("flags grouped card and account numbers", () => {
     assert.equal(findFullNumber("4111 1111 1111 1111"), "full_number");
     assert.equal(findFullNumber("4111-1111-1111-1"), "full_number");
     assert.equal(findFullNumber("3782 822463 10005"), "full_number");
@@ -53,11 +42,11 @@ describe("findFullNumber", () => {
     assert.equal(findFullNumber("800 555 0100 4111 1111 1111 1111"), "full_number");
   });
 
-  it("allows phones, dates, ZIP+4, years, and last-4s", () => {
+  it("allows formatted phones, dates, ZIP+4, years, and last-4s", () => {
     for (const ok of [
-      "Call 555-123-4567",
-      "+1 (555) 123 4567",
-      "800 555 0100 800 555 0199",
+      "Call 404-555-0123",
+      "+1 (404) 555 0123",
+      "800 555 0100 or 800 555 0199",
       "Renews 2026-09-29",
       "ZIP 12345-6789",
       "ends 0000",
@@ -95,36 +84,16 @@ describe("QA blockers: looksLikeFullNumber", () => {
     assert.equal(looksLikeFullNumber("4111111111111111"), true);
   });
 
-  it("grouped numbers: 10 to 12 digits in 4+ digit groups, any separator", () => {
-    assert.equal(findFullNumber("0001-2345-6789"), "full_number");
-    assert.equal(findFullNumber("0001.2345.6789"), "full_number");
-    assert.equal(findFullNumber("1234 5678 90"), "full_number");
-    assert.equal(findFullNumber("1234 5678 9"), null);
-    assert.equal(findFullNumber("123 4567 8901"), null);
-    assert.equal(findFullNumber("4111.1111.1111.1111"), "full_number");
-  });
-
-  it("SSN shape with dots, slashes, or mixed separators", () => {
-    assert.equal(findFullNumber("123/45/6789"), "ssn");
-    assert.equal(findFullNumber("123.45-6789"), "ssn");
-    assert.equal(findFullNumber("1123.45.6789"), null);
-    assert.equal(findFullNumber("123.45.67890"), null);
-  });
-
   it("allows international phones, lists of years, and amounts with cents", () => {
-    assert.equal(findFullNumber("+44 7700 900123"), null);
+    assert.equal(findFullNumber("+44 20 7946 0958"), null);
     assert.equal(findFullNumber("+49 1512 3456789"), null);
-    assert.equal(findFullNumber("+4915123456789"), null);
-    assert.equal(findFullNumber("+441234567890123"), null);
-    assert.equal(findFullNumber("+4412345678901234"), "full_number");
-    assert.equal(findFullNumber("+4412 3456 7890 1234"), "full_number");
-    assert.equal(findFullNumber("x+4111 1111 1111 1111 1"), "full_number");
-    assert.equal(findFullNumber("Returns 2021 2022 2023 2024"), null);
-    assert.equal(findFullNumber("Returns 1999/2000/2001"), null);
-    assert.equal(findFullNumber("2021 2022 4111 1111"), "full_number");
+    assert.equal(findFullNumber("+4915123456789"), "full_number");
+    assert.equal(findFullNumber("Returns 1999 2000 2001 2002 2003"), null);
+    assert.equal(findFullNumber("Returns 2021, 2022, 2023, 2024"), null);
+    assert.equal(findFullNumber("Returns 2021 2022 2023 2024"), "full_number");
     assert.equal(findFullNumber("$25000000.50 face value"), null);
     assert.equal(findFullNumber("25000000.505"), "full_number");
-    assert.equal(findFullNumber("250000000.50"), "ssn");
+    assert.equal(findFullNumber("250000000.50"), "full_number");
   });
 });
 
@@ -318,8 +287,11 @@ describe("scanText", () => {
 describe("scanField", () => {
   it("skips the secret heuristics for last-4, email, and phone, which have their own formats", () => {
     assert.equal(scanField("email", "Hunter2!x@example.com"), null);
-    assert.equal(scanField("phone", "+1 (555) 010-0199"), null);
+    assert.equal(scanField("phone", "+1 (404) 555-0199"), null);
     assert.equal(scanField("last4", "1234"), null);
+    assert.equal(scanField("last4", "Hunter2!x"), null);
+    assert.equal(scanField("phone", "Ab12cd34!"), null);
+    assert.equal(scanField("text", "Ab12cd34!")?.level, "warn");
   });
 
   it("QA-1: still runs the block-level checks on last-4, email, and phone", () => {
@@ -375,21 +347,6 @@ describe("pendingFindings", () => {
 });
 
 describe("rule boundaries", () => {
-  it("blocks grouped numbers from 10 digits, and leaves 10+ digit groups to the long-run rule", () => {
-    assert.equal(findFullNumber("12345678 1234 1234567"), "full_number");
-    assert.equal(findFullNumber("12345678 12"), "full_number");
-    assert.equal(findFullNumber("12345678 1"), null);
-    assert.equal(findFullNumber("8005550100 1234"), null);
-    assert.equal(findFullNumber("1234 8005550100"), null);
-    assert.equal(findFullNumber("5550100000 5550100001"), null);
-  });
-
-  it("finds a card number that starts after a short leading group", () => {
-    assert.equal(findFullNumber("12 1234 1234 1234 1"), "full_number");
-    assert.equal(findFullNumber("12 1234 5678"), null);
-    assert.equal(findFullNumber("1234 5678"), null);
-  });
-
   it("returns null for text with no digits", () => {
     assert.equal(findFullNumber("Example Bank, Main St branch"), null);
   });

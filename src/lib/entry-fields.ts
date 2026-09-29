@@ -1,5 +1,5 @@
 import { ENTRY_TYPES, type EntryType } from "./schema";
-import { CREDENTIAL_ERROR, FULL_NUMBER_ERROR, findBlocked } from "./privacy-warn";
+import { CREDENTIAL_ERROR, FULL_NUMBER_ERROR, findBlocked, isFormattedPhone } from "./privacy-warn";
 
 export type FieldKind = "text" | "textarea" | "last4" | "phone" | "email";
 
@@ -134,7 +134,10 @@ function blockedError(value: string) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PHONE_RE = /^\+?[\d\s().x-]{7,30}$/;
+/** Characters a phone field may hold; libphonenumber-js then checks it is a valid number. */
+const PHONE_RE = /^\+?[\d\s().x-]+$/;
+export const PHONE_ERROR =
+  "Enter a phone number with its area code, like (404) 555-0123, or with + and the country code, like +44 20 7946 0958.";
 
 function limitFor(kind: FieldKind) {
   return kind === "textarea" ? LIMITS.textarea : LIMITS.text;
@@ -144,7 +147,7 @@ function formatError(kind: FieldKind, value: string): string | null {
   if (kind === "last4") return /^\d{4}$/.test(value) ? null : "Enter exactly 4 digits, or leave it blank.";
   if (kind === "email") return EMAIL_RE.test(value) ? null : "Enter a valid email address.";
   if (kind === "phone") {
-    return PHONE_RE.test(value) ? null : "Enter a phone number using digits, spaces, and + ( ) - only.";
+    return PHONE_RE.test(value) && isFormattedPhone(value) ? null : PHONE_ERROR;
   }
   return null;
 }

@@ -5,6 +5,7 @@ import {
   ENTRY_TYPE_DEFS,
   FULL_NUMBER_ERROR,
   LIMITS,
+  PHONE_ERROR,
   entrySummary,
   isEntryType,
   readPayload,
@@ -144,10 +145,10 @@ describe("QA blockers: every field runs the shared privacy checks", () => {
   });
 
   it("QA-1: still accepts real phones and emails, and Last 4 stays 4 digits", () => {
-    const ok = contact({ phone: "+1 (555) 010-0199", email: "pat@example.com" });
+    const ok = contact({ phone: "+1 (404) 555-0199", email: "pat@example.com" });
     assert.equal(ok.ok, true);
-    assert.equal(contact({ phone: "8005550100" }).ok, true);
-    assert.equal(contact({ phone: "+44 7700 900123" }).ok, true);
+    assert.equal(contact({ phone: "(800) 555-0100" }).ok, true);
+    assert.equal(contact({ phone: "+44 20 7946 0958" }).ok, true);
     assert.equal(validateEntry("account", { label: "Joint", last4: "1111" }).ok, true);
   });
 
@@ -266,28 +267,30 @@ describe("validateEntry", () => {
         ok: false,
         fieldErrors: {
           email: "Enter a valid email address.",
-          phone: "Enter a phone number using digits, spaces, and + ( ) - only.",
+          phone: PHONE_ERROR,
         },
       },
     );
     assert.equal(validateEntry("contact", { label: "Pat", phone: "12345" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "555 1234 x" }).ok, true);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "1".repeat(31) }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "404 555 0123 x12" }).ok, true);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "404/555/0123" }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "~404-555-0123" }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "+1 404 555 0123;ext=12" }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", email: "a b@example.com" }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", email: "x pat@example.com" }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", email: "pat@example.com x" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "a555 123 4567" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "555 123 4567a" }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "a404 555 0123" }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "404 555 0123a" }).ok, false);
     assert.deepEqual(
       validateEntry("contact", {
         label: "Pat Example",
         email: "pat@example.com",
-        phone: "+1 (555) 010-0000",
+        phone: "+1 (404) 555-0100",
       }),
       {
         ok: true,
         label: "Pat Example",
-        payload: { email: "pat@example.com", phone: "+1 (555) 010-0000" },
+        payload: { email: "pat@example.com", phone: "+1 (404) 555-0100" },
       },
     );
   });
