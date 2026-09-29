@@ -1,14 +1,14 @@
-/* c8 ignore file — better-auth wiring side effects */
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
 import { magicLink } from "better-auth/plugins";
 import { resolveAuthSecret } from "./auth-secret";
+import { resolveBaseURL } from "./base-url";
 import { db } from "./db";
 import * as schema from "./schema";
 import { sendMail } from "./mail";
 
-const baseURL = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
+const baseURL = resolveBaseURL(process.env);
 
 export const auth = betterAuth({
   secret: resolveAuthSecret(process.env),
