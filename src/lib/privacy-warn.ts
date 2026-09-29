@@ -311,14 +311,16 @@ function joinCounts(head: string, tail: string, marked: boolean) {
 function tightRunHidesCard(text: string, phones: FoundPhone[], aside: boolean[]) {
   const inPhone: boolean[] = new Array(text.length).fill(false);
   for (const { startsAt, endsAt } of phones) inPhone.fill(true, startsAt, endsAt);
-  let glued = "";
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (!inPhone[i]) glued += aside[i] ? "Z" : ch;
-    else if (DIGIT_CHAR_RE.test(ch)) glued += ch;
-    else if (DIGIT_CHAR_RE.test(glued.at(-1) ?? "") && inPhone[i - 1]) glued += "-";
-    else if (ch === "+") glued += "Z";
-  }
+  const glued = text
+    .split("")
+    .map((ch, i) => {
+      if (!inPhone[i]) return aside[i] ? "Z" : ch;
+      if (DIGIT_CHAR_RE.test(ch)) return ch;
+      if (ch === "+") return "Z";
+      // One "-" after each digit group inside the phone; its other separators ("(", ") ") drop out.
+      return DIGIT_CHAR_RE.test(text[i - 1]) ? "-" : "";
+    })
+    .join("");
   return [...glued.matchAll(TIGHT_RUN_RE)].some(([run]) => {
     const digits = run.replace(NON_DIGIT_RE, "");
     return isLuhnCard(digits) || (COUNTRY_CODE_ONE_RE.test(run) && isLuhnCard(digits.slice(1)));
