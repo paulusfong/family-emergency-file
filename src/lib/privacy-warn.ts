@@ -69,8 +69,11 @@ const AMOUNT_RE =
   /(?<![0-9,.])(?:\$[0-9]{1,3}(?:,[0-9]{3}){1,3}|[0-9]{1,3}(?:,[0-9]{3}){1,3}\.[0-9]{2}|[0-9]{1,8}\.[0-9]{2}|\$[0-9]{1,8})(?![0-9,]|\.[0-9])/g;
 /** Years listed with commas ("2019, 2021, 2024"), or five or more with spaces; four spaced years look like a card. */
 const YEAR_LIST_RE = new RegExp(`(?<![0-9])${YEAR}(?:(?:\\s*,\\s*${YEAR})+|(?:\\s+${YEAR}){4,})(?![0-9])`, "g");
-/** A VIN: 17 letters and digits, no I, O, or Q, with at least one letter (17 bare digits stay blocked). */
+/** A VIN shape: 17 letters and digits, no I, O, or Q, with at least one letter (17 bare digits stay blocked). */
 const VIN_RE = /(?<![\p{L}0-9])(?=[0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}(?![\p{L}0-9])/giu;
+/** ISO 3779 transliteration: a character's value is its index here, mod 10 (A=1 ... H=8, J=1 ... R=9, S=2 ... Z=9). */
+const VIN_VALUES = "0123456789.ABCDEFGH..JKLMN.P.R..STUVWXYZ";
+const VIN_WEIGHTS = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
 /** What a set-aside token becomes: a letter that is not an extension marker, so it ends every run. */
 const MASK = " Z ";
 
@@ -106,6 +109,20 @@ function holdsCard(text: string) {
 
 function maskUnlessCard(token: string) {
   return holdsCard(token) ? token : MASK;
+}
+
+/** The ISO 3779 check digit (position 9): weighted sum mod 11, where 10 is written X. */
+export function hasVinCheckDigit(vin: string) {
+  const chars = vin.toUpperCase();
+  let sum = 0;
+  for (let i = 0; i < VIN_WEIGHTS.length; i++) sum += (VIN_VALUES.indexOf(chars[i]) % 10) * VIN_WEIGHTS[i];
+  const check = sum % 11;
+  return chars[8] === (check === 10 ? "X" : String(check));
+}
+
+/** A VIN-shaped token is set aside only when its check digit validates; otherwise its digits count as usual. */
+function maskVin(token: string) {
+  return hasVinCheckDigit(token) ? maskUnlessCard(token) : token;
 }
 
 /** Luhn: the check digit (last) brings the weighted sum of the rest to a multiple of 10. */
@@ -145,8 +162,8 @@ function maskWellFormed(text: string) {
       out = out.slice(0, startsAt) + "Z".repeat(phone.length) + out.slice(endsAt);
     }
   }
-  for (const re of [DATE_RE, ZIP4_RE, AMOUNT_RE, YEAR_LIST_RE, VIN_RE]) out = out.replace(re, maskUnlessCard);
-  return out;
+  for (const re of [DATE_RE, ZIP4_RE, AMOUNT_RE, YEAR_LIST_RE]) out = out.replace(re, maskUnlessCard);
+  return out.replace(VIN_RE, maskVin);
 }
 
 /**
@@ -155,7 +172,8 @@ function maskWellFormed(text: string) {
  * 1. any 13-19 digit loose run that passes Luhn, with no exemptions;
  * 2. an SSN layout (3-2-4 digits; any separators, single letters included);
  * 3. once well-formed tokens are set aside (formatted valid phones, dates,
- *    ZIP+4s, amounts, year lists, VINs; none of them Luhn-valid), any run of
+ *    ZIP+4s, amounts, year lists, VINs with a valid check digit; none of
+ *    them Luhn-valid), any run of
  *    9+ digits. A phone written as a bare run ("4045550123") is not set aside.
  */
 export function findFullNumber(raw: string): PrivacyReason | null {

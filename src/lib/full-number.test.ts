@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { findFullNumber, isFormattedPhone, looksLikeFullNumber, normalizeForScan, passesLuhn } from "./privacy-warn";
+import { findFullNumber, hasVinCheckDigit, isFormattedPhone, looksLikeFullNumber, normalizeForScan, passesLuhn } from "./privacy-warn";
 
 /** Each row: [name, value]. */
 type Row = readonly [string, string];
@@ -309,25 +309,60 @@ describe("findFullNumber: letters and extension markers", () => {
   });
 });
 
+describe("hasVinCheckDigit", () => {
+  it("accepts VINs whose ISO 3779 check digit at position 9 validates", () => {
+    for (const vin of ["1HGCM82633A004352", "JH4KA7561PC008269", "AB123456789012345", "ab123456789012345", "AB000003X12345678"]) {
+      assert.equal(hasVinCheckDigit(vin), true, vin);
+    }
+  });
+
+  it("rejects a wrong check digit, including 0 where the sum gives X", () => {
+    for (const vin of ["123456789ABCDEFGH", "1HGCM82653A004352", "JH4KA7561PC008260", "AB000003012345678", "AB123456789012346"]) {
+      assert.equal(hasVinCheckDigit(vin), false, vin);
+    }
+  });
+});
+
 describe("findFullNumber: VINs", () => {
-  it("sets aside 17 letters and digits with no I, O, or Q", () => {
-    for (const ok of ["AB123456789012345", "ab123456789012345", "Title: AB123456789012345.", "12345678901234AB5"]) {
+  it("sets aside 17 letters and digits with no I, O, or Q when the check digit validates", () => {
+    for (const ok of [
+      "1HGCM82633A004352",
+      "JH4KA7561PC008269",
+      "AB123456789012345",
+      "ab123456789012345",
+      "Title: AB123456789012345.",
+      "12345678X12345AB5",
+      "AB000003X12345678",
+    ]) {
       assert.equal(findFullNumber(ok), null, ok);
     }
   });
 
-  it("only sets aside the VIN shape", () => {
+  it("blocks a VIN-shaped token with a bad check digit when it holds an SSN or 9+ digits", () => {
+    for (const [bad, kind] of [
+      ["123456789ABCDEFGH", "ssn"],
+      ["VIN 123456789ABCDEFGH on the title", "ssn"],
+      ["WBAXY123456789ABC", "ssn"],
+      ["ABCDEFGH123456789", "ssn"],
+      ["JH4KA123456789PCX", "ssn"],
+      ["AB000003012345678", "full_number"],
+      ["AB123456789012346", "full_number"],
+    ] as const) {
+      assert.equal(findFullNumber(bad), kind, bad);
+    }
+  });
+
+  it("only sets aside the VIN shape, even when the check digit would validate", () => {
     for (const bad of [
       "AB12345678901234",
       "AB1234567890123456",
-      "AI123456789012345",
-      "AO123456789012345",
-      "AQ123456789012345",
-      "12345678901234567",
+      "AI123456889012345",
+      "AO123456889012345",
+      "AQ123456889012345",
+      "12345678712345678",
       "ZAB123456789012345",
       "1AB123456789012345",
       "AB123456789012345C",
-      "AB1234567890123457",
     ]) {
       assert.notEqual(findFullNumber(bad), null, bad);
     }
