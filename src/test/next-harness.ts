@@ -28,9 +28,13 @@ type CookieStore = {
 let cookieMap = new Map<string, string>();
 let headerStore = new Headers();
 
+/** Paths passed to next/cache revalidatePath since the last resetHarness(). */
+export const revalidated: string[] = [];
+
 export function resetHarness() {
   cookieMap = new Map();
   headerStore = new Headers();
+  revalidated.length = 0;
 }
 
 export function setCookie(name: string, value: string) {
@@ -77,7 +81,9 @@ export function installNextMocks() {
 
   mock.module("next/cache", {
     namedExports: {
-      revalidatePath: () => {},
+      revalidatePath: (p: string) => {
+        revalidated.push(p);
+      },
       revalidateTag: () => {},
     },
   });
