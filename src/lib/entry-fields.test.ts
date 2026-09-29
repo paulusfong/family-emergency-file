@@ -325,6 +325,11 @@ describe("validateEntry", () => {
       ok: false,
       fieldErrors: { label: "Invalid value.", notes: "Invalid value." },
     });
+    // A non-string is "Invalid value." even in a field with its own format rule.
+    assert.deepEqual(validateEntry("account", { label: "Joint", last4: 1234 }), {
+      ok: false,
+      fieldErrors: { last4: "Invalid value." },
+    });
     assert.deepEqual(validateEntry("note", { label: "Ok", notes: null }), {
       ok: true,
       label: "Ok",
