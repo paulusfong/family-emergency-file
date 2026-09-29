@@ -58,7 +58,6 @@ jobs:
       - name: Generate throwaway secrets
         run: |
           echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
-          echo "RESEND_API_KEY=ci-unused-$(openssl rand -hex 8)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v7
         with:
@@ -98,7 +97,8 @@ jobs:
       - name: Build
         env:
           BETTER_AUTH_URL: http://localhost:3000
-        run: npm run build
+        # Throwaway key scoped to the build only, so unit tests never see a mail key.
+        run: RESEND_API_KEY="ci-unused-$(openssl rand -hex 8)" npm run build
 
       - name: Upload coverage report
         if: always()
