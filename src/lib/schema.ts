@@ -1,4 +1,3 @@
-/* c8 ignore file — drizzle table defs; onDelete/as-const noise under c8+tsx */
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 

@@ -2,13 +2,14 @@
   "name": "family-emergency-file",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-test-module-mocks --import tsx --import ./src/test/register-css.mjs --test 'src/**/*.test.ts'",
-    "test:coverage": "c8 node --experimental-test-module-mocks --import tsx --import ./src/test/register-css.mjs --test 'src/**/*.test.ts'",
+    "test": "node --experimental-test-module-mocks --import tsx --import ./src/test/setup.mjs --test 'src/**/*.test.ts'",
+    "test:coverage": "node scripts/coverage.mjs",
     "test:mutation": "stryker run",
     "db:push": "drizzle-kit push"
   },
