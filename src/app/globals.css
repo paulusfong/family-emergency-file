@@ -131,6 +131,7 @@ label {
 input[type="email"],
 input[type="text"],
 input[type="tel"],
+input[type="password"],
 textarea {
   width: 100%;
   max-width: 360px;
@@ -591,4 +592,89 @@ button.danger {
   .section-list a {
     padding: 0.75rem 0.8rem;
   }
+}
+
+/* PR-FEF-4: export and account delete */
+
+.export-options {
+  display: grid;
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+
+.export-option {
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.75rem;
+}
+
+.export-option h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.export-option p {
+  margin: 0 0 0.75rem;
+}
+
+.export-option code {
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.encrypted-export .field {
+  max-width: 24rem;
+}
+
+.export-status {
+  min-height: 1.25rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+}
+
+.export-error {
+  color: var(--danger);
+}
+
+.btn-danger,
+button.btn-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.btn-danger:hover,
+button.btn-danger:hover {
+  background: oklch(45% 0.16 25);
+}
+
+.delete-list {
+  margin: 0.5rem 0 1rem;
+  padding-left: 1.25rem;
+}
+
+.delete-form {
+  margin-top: 1.25rem;
+}
+
+.delete-form .field {
+  max-width: 20rem;
+}
+
+@media (min-width: 720px) {
+  .export-options {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .export-option:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+.deleted-copy p {
+  margin: 0 0 0.85rem;
+}
+
+.deleted-copy p:last-child {
+  margin-bottom: 0;
 }
