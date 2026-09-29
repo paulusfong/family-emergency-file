@@ -27,8 +27,10 @@ export const SECRET_WARNING =
   "This looks like a password, PIN, or other secret. Keep it in your password manager and write down where it lives instead.";
 
 /*
- * Full numbers. The text is normalized first (NFKC, so fullwidth digits become
- * ASCII; zero-width characters removed; every decimal digit mapped to 0-9). A
+ * Full numbers. The text is normalized first (Hangul fillers turned into
+ * spaces; NFKC, so fullwidth digits become ASCII; every default-ignorable code
+ * point, such as ZWSP, ZWJ, or a soft hyphen, removed; every decimal digit
+ * mapped to 0-9). A
  * "run" is digits joined across separators, so "4111 - 1111_1111\t1111" is one
  * 16-digit run. Anything that is not a letter or a digit is a separator, and so
  * is an extension marker ("x", "ext") on its own. Other letters end a run,
@@ -37,7 +39,13 @@ export const SECRET_WARNING =
  * word of two or more letters ends every run, so VINs, serials, and policy IDs
  * ("1HGCM82633A004352", "HO3-4471-AZ") do not join into long numbers.
  */
-const ZERO_WIDTH_RE = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
+/**
+ * Hangul fillers are letters (Lo) that render as blank space. They are also
+ * default-ignorable, but removing one could join two single letters into a
+ * word that ends a run, so each becomes a space: a separator for every check.
+ */
+const HANGUL_FILLER_RE = /[\u115F\u1160\u3164\uFFA0]/g;
+const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/gu;
 const DIGIT_RE = /\p{Nd}/gu;
 const SEP = "[^\\p{L}0-9]|(?:x|ext)(?!\\p{L})";
 const LOOSE_SEP = "[^\\p{L}0-9]|(?:\\p{L}|ext)(?!\\p{L})";
@@ -89,11 +97,12 @@ function digitValue(ch: string) {
   return (cp - start) % 10;
 }
 
-/** NFKC, zero-width characters removed, every decimal digit written 0-9. */
+/** Hangul fillers as spaces, NFKC, default-ignorables removed, every decimal digit written 0-9. */
 export function normalizeForScan(text: string) {
   return text
+    .replace(HANGUL_FILLER_RE, " ")
     .normalize("NFKC")
-    .replace(ZERO_WIDTH_RE, "")
+    .replace(DEFAULT_IGNORABLE_RE, "")
     .replace(DIGIT_RE, (d) => String(digitValue(d)));
 }
 
@@ -152,13 +161,19 @@ export function isFormattedPhone(value: string) {
   );
 }
 
-/** Sets aside formatted phones, dates, ZIP+4s, amounts, year lists, and VINs so they do not join into a run. */
+/**
+ * Sets aside formatted phones, dates, ZIP+4s, amounts, year lists, and VINs so
+ * they do not join into a run. A phone is not set aside when its national
+ * number and extension, joined, pass Luhn ("+1 404 683 5510 extension
+ * 373597"); its 10+ digits then count as a run.
+ */
 function maskWellFormed(text: string) {
   let out = text;
   // Phones are overwritten with letters of the same length, so later offsets still line up.
-  for (const { startsAt, endsAt } of findPhoneNumbersInText(text, { defaultCountry: "US" })) {
+  for (const { startsAt, endsAt, number } of findPhoneNumbersInText(text, { defaultCountry: "US" })) {
     const phone = text.slice(startsAt, endsAt);
-    if (isFormattedPhone(phone) && !holdsCard(phone)) {
+    const joined = [number.nationalNumber, number.ext].join("");
+    if (isFormattedPhone(phone) && !holdsCard(phone) && !isLuhnCard(joined)) {
       out = out.slice(0, startsAt) + "Z".repeat(phone.length) + out.slice(endsAt);
     }
   }

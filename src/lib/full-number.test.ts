@@ -493,3 +493,89 @@ describe("looksLikeFullNumber", () => {
     assert.equal(looksLikeFullNumber("2026-09-29 - 2027-09-29"), false);
   });
 });
+
+/** The four Hangul fillers: letters (Lo) that render as blank space. */
+const HANGUL_FILLERS = [
+  ["U+3164 HANGUL FILLER", "\u3164"],
+  ["U+FFA0 HALFWIDTH HANGUL FILLER", "\uFFA0"],
+  ["U+115F HANGUL CHOSEONG FILLER", "\u115F"],
+  ["U+1160 HANGUL JUNGSEONG FILLER", "\u1160"],
+] as const;
+
+describe("normalizeForScan: default-ignorables and Hangul fillers", () => {
+  it("turns each Hangul filler into a space", () => {
+    for (const [name, f] of HANGUL_FILLERS) assert.equal(normalizeForScan(`12${f}34${f}`), "12 34 ", name);
+  });
+
+  it("removes every default-ignorable code point", () => {
+    for (const di of ["\u034F", "\u200B", "\u17B4", "\u180E", "\u200E", "\u2064", "\uFE0F", "\u{E0001}", "\u{1D173}"]) {
+      assert.equal(normalizeForScan(`12${di}34`), "1234", JSON.stringify(di));
+    }
+    assert.equal(normalizeForScan("Pat\u200D's plan"), "Pat's plan");
+  });
+});
+
+describe("findFullNumber: Hangul fillers are separators for every check", () => {
+  for (const [name, f] of HANGUL_FILLERS) {
+    it(`blocks with ${name}`, () => {
+      const rows: [string, string, "full_number" | "ssn"][] = [
+        ["between the groups of a Luhn card", `4111${f}1111${f}1111${f}1111`, "full_number"],
+        ["two between the groups of a Luhn card", `4111${f}${f}1111${f}${f}1111${f}${f}1111`, "full_number"],
+        ["next to single letters in a Luhn card", `4111a${f}b1111c1111d1111`, "full_number"],
+        ["between the 3-2-4 groups of an SSN", `123${f}45${f}6789`, "ssn"],
+        ["two between the 3-2-4 groups of an SSN", `123${f}${f}45${f}${f}6789`, "ssn"],
+        ["inside a bare 9-digit run", `12345${f}6789`, "ssn"],
+        ["inside a bare 12-digit run", `1234${f}5678${f}9012`, "full_number"],
+        ["in notes around a bare run", `Acct 0001${f}2345${f}6789 at Example Bank`, "full_number"],
+      ];
+      for (const [what, value, kind] of rows) assert.equal(findFullNumber(value), kind, what);
+    });
+  }
+
+  it("blocks ZWSP, ZWJ, and soft hyphens between digits", () => {
+    assert.equal(findFullNumber("123\u200B45\u200D67\u00AD89"), "ssn");
+    assert.equal(findFullNumber("4111\u200B1111\u200D1111\u00AD1111"), "full_number");
+    assert.equal(findFullNumber("1\u200B2\u200B3\u200B4\u200B5\u200B6\u200B7\u200B8\u200B9\u200B0"), "full_number");
+    assert.equal(findFullNumber("123\u200D-45\u00AD-6789"), "ssn");
+  });
+});
+
+/**
+ * QA's two repros, then four generated joins: a valid US phone plus a 6-digit
+ * extension whose 16 digits pass Luhn. The +1 and "1-" rows are Luhn-valid
+ * only without the country code, and "extension" is a word that ends a run,
+ * so only the national-number-plus-extension check catches them.
+ */
+const LUHN_EXTENSIONS = [
+  "(404) 683-5510 x373597",
+  "404-683-5510 ext. 373597",
+  "+1 312-867-5309 extension 179190",
+  "1-312-867-5309 x179190",
+  "312.867.5309 ext 179190",
+  "(312) 867-5309 #179190",
+];
+
+describe("findFullNumber: phone extensions", () => {
+  it("blocks a phone whose digits and extension, joined, pass Luhn", () => {
+    assert.equal(passesLuhn("4046835510373597"), true);
+    assert.equal(passesLuhn("3128675309179190"), true);
+    assert.equal(passesLuhn("13128675309179190"), false);
+    for (const v of LUHN_EXTENSIONS) {
+      assert.equal(findFullNumber(v), "full_number", v);
+      assert.equal(findFullNumber(`Pat's desk line is ${v}, after 5pm.`), "full_number", v);
+    }
+  });
+
+  it("still sets aside a phone whose extension does not make a card", () => {
+    for (const ok of ["(404) 555-0123 ext 12", "+1 312-867-5309 extension 179191", "Desk: 1-312-867-5309 x179191"]) {
+      assert.equal(findFullNumber(ok), null, ok);
+    }
+  });
+
+  it("blocks a valid long international number whose national number passes Luhn", () => {
+    // 13 national digits, Luhn-valid on their own, but not with the 49 in front.
+    assert.equal(passesLuhn("2303092261144"), true);
+    assert.equal(passesLuhn("492303092261144"), false);
+    assert.equal(findFullNumber("+49 2303 0922 6114 4"), "full_number");
+  });
+});
