@@ -11,7 +11,8 @@
     "test": "node --experimental-test-module-mocks --import tsx --import ./src/test/setup.mjs --test 'src/**/*.test.ts' 'scripts/**/*.test.mjs'",
     "test:coverage": "node scripts/coverage.mjs",
     "test:mutation": "stryker run",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "scan:full-numbers": "node --import tsx scripts/scan-full-numbers.mjs"
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
