@@ -9,17 +9,57 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  TEST_CMD: node --experimental-test-module-mocks --import tsx --import ./src/test/setup.mjs --test
+
 jobs:
-  test:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+      tests: ${{ steps.scope.outputs.tests }}
+      shards: ${{ steps.scope.outputs.shards }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - name: Generate throwaway auth secret
-        run: echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
 
-      - uses: actions/setup-node@v4
+      - name: Plan changed-file scope
+        id: scope
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          node scripts/ci-changed.mjs plan | tee /tmp/ci-plan.json
+          echo "mode=$(node -p "JSON.parse(require('fs').readFileSync('/tmp/ci-plan.json','utf8')).mode")" >> "$GITHUB_OUTPUT"
+          SHARDS=$(node scripts/ci-changed.mjs shards)
+          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
+          echo "Mutation shards: $SHARDS"
+          {
+            echo "tests<<EOF"
+            node scripts/ci-changed.mjs tests
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate throwaway secrets
+        run: |
+          echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -33,29 +73,82 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
-      - name: Unit tests
+      - name: Unit tests (changed and related)
+        if: needs.plan.outputs.mode == 'partial'
+        env:
+          TESTS: ${{ needs.plan.outputs.tests }}
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(printf '%s\n' "$TESTS" | sed '/^$/d')
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No unit tests import the changed sources; the coverage gate below still runs the whole suite."
+            exit 0
+          fi
+          printf 'Running: %s\n' "${FILES[@]}"
+          $TEST_CMD "${FILES[@]}"
+
+      - name: Unit tests (full)
+        if: needs.plan.outputs.mode == 'full'
         run: npm test
 
-      - name: Coverage gate (whole src, 100%)
+      - name: Coverage gate (whole src, 100%, every mode)
         run: npm run test:coverage
 
-      - name: Mutation (Stryker)
-        run: npm run test:mutation
+      - name: Build
+        env:
+          BETTER_AUTH_URL: http://localhost:3000
+        # Throwaway key scoped to the build only, so unit tests never see a mail key.
+        run: RESEND_API_KEY="ci-unused-$(openssl rand -hex 8)" npm run build
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage/
           retention-days: 14
           if-no-files-found: warn
 
+  mutation:
+    needs: plan
+    if: needs.plan.outputs.shards != '[]'
+    name: mutation (${{ matrix.shard.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Stryker (break at 90%)
+        env:
+          STRYKER_MUTATE: ${{ matrix.shard.mutate }}
+          SHARD_TESTS: ${{ matrix.shard.tests }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SHARD_TESTS" ]; then
+            export STRYKER_TEST_COMMAND="$TEST_CMD $SHARD_TESTS"
+          fi
+          echo "Mode: ${{ needs.plan.outputs.mode }}"
+          echo "Stryker mutate: $STRYKER_MUTATE"
+          echo "Stryker tests: ${STRYKER_TEST_COMMAND:-npm test}"
+          npx stryker run
+
       - name: Upload Stryker report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: stryker-report
+          name: stryker-report-${{ matrix.shard.name }}
           path: reports/
           retention-days: 14
           if-no-files-found: warn
@@ -68,7 +161,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v3

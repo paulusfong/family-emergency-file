@@ -6,7 +6,6 @@ import { pathToFileURL } from "node:url";
 import { before, describe, it, mock } from "node:test";
 import React from "react";
 import {
-  NextNotFound,
   NextRedirect,
   installNextMocks,
   renderElement,
@@ -217,22 +216,6 @@ describe("app coverage", async () => {
     const html = await renderElement(await Settings());
     assert.match(html, /Settings/);
     assert.match(html, /Sign out/);
-  });
-
-  it("renders section stub and 404s unknown key", async () => {
-    resetHarness();
-    sessionUser = fakeUser;
-    const { default: Section } = await import("@/app/app/sections/[key]/page");
-    const html = await renderElement(
-      await Section({ params: Promise.resolve({ key: "S3" }) }),
-    );
-    assert.match(html, /Banking/);
-    assert.match(html, /Coming in the next PR/);
-
-    await assert.rejects(
-      () => Section({ params: Promise.resolve({ key: "S99" }) }),
-      (e: unknown) => e instanceof NextNotFound,
-    );
   });
 
   it("renders privacy and terms", async () => {

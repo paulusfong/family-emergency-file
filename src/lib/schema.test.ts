@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getTableConfig } from "drizzle-orm/sqlite-core";
 import {
+  CHECKLIST_STATUS,
   ENTRY_TYPES,
   SECTION_DEFS,
   SECTION_STATUS,
   account,
+  checklistItems,
   entries,
   householdFiles,
   sections,
@@ -28,10 +30,19 @@ function fkTargets(table: Parameters<typeof getTableConfig>[0]) {
 describe("schema", () => {
   it("names the tables better-auth and the domain expect", () => {
     assert.deepEqual(
-      [user, session, account, verification, householdFiles, sections, entries].map(
+      [user, session, account, verification, householdFiles, sections, entries, checklistItems].map(
         (t) => getTableConfig(t).name,
       ),
-      ["user", "session", "account", "verification", "household_files", "sections", "entries"],
+      [
+        "user",
+        "session",
+        "account",
+        "verification",
+        "household_files",
+        "sections",
+        "entries",
+        "checklist_items",
+      ],
     );
   });
 
@@ -47,6 +58,17 @@ describe("schema", () => {
     assert.deepEqual(fkTargets(entries), [
       { from: "section_id", to: "sections.id", onDelete: "cascade" },
     ]);
+    assert.deepEqual(fkTargets(checklistItems), [
+      { from: "section_id", to: "sections.id", onDelete: "cascade" },
+    ]);
+  });
+
+  it("indexes entries by section and keeps checklist item keys unique per section", () => {
+    const ent = getTableConfig(entries).indexes.map((i) => i.config);
+    assert.ok(ent.some((i) => !i.unique && i.name === "entries_section_id"));
+    const items = getTableConfig(checklistItems).indexes.map((i) => i.config);
+    assert.ok(items.some((i) => i.unique && i.name === "checklist_items_section_key"));
+    assert.deepEqual([...CHECKLIST_STATUS], ["open", "done", "skipped"]);
   });
 
   it("enforces one household file per user and unique section keys per file", () => {

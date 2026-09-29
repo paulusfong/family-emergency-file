@@ -1,7 +1,8 @@
 import { asc, count, eq, sql } from "drizzle-orm";
 import { db } from "./db";
 import { id } from "./ids";
-import { householdFiles, SECTION_DEFS, sections } from "./schema";
+import { checklistItems, householdFiles, SECTION_DEFS, sections } from "./schema";
+import { CHECKLIST_SEED_TOTAL, checklistSeedRows } from "./sections";
 
 async function findFile(userId: string) {
   const [file] = await db
@@ -18,6 +19,33 @@ async function sectionCount(householdFileId: string) {
     .from(sections)
     .where(eq(sections.householdFileId, householdFileId));
   return row.n;
+}
+
+async function checklistCount(householdFileId: string) {
+  const [row] = await db
+    .select({ n: count() })
+    .from(checklistItems)
+    .innerJoin(sections, eq(sections.id, checklistItems.sectionId))
+    .where(eq(sections.householdFileId, householdFileId));
+  return row.n;
+}
+
+/**
+ * Insert every starter checklist item for the user's sections, skipping items
+ * that already exist. Resolves section ids in SQL, like seedSectionsSql.
+ */
+function seedChecklistSql(userId: string) {
+  const rows = checklistSeedRows().map(
+    (r) => sql`(${id()}, ${r.sectionKey}, ${r.itemKey}, ${r.label}, ${r.sortOrder})`,
+  );
+  return sql`INSERT INTO ${checklistItems}
+    (id, section_id, item_key, label, status, sort_order, created_at, updated_at)
+    SELECT v.column1, s.id, v.column3, v.column4, 'open', v.column5, unixepoch(), unixepoch()
+    FROM ${sections} s
+    JOIN ${householdFiles} hf ON hf.id = s.household_file_id
+    JOIN (VALUES ${sql.join(rows, sql`, `)}) v ON v.column2 = s.section_key
+    WHERE hf.user_id = ${userId}
+    ON CONFLICT (section_id, item_key) DO NOTHING`;
 }
 
 /**
@@ -37,16 +65,23 @@ function seedSectionsSql(userId: string) {
 }
 
 /**
- * Ensure the user has exactly one household_file with all twelve sections.
+ * Ensure the user has exactly one household_file with all twelve sections and
+ * their starter checklist items.
  *
  * Race-safe: concurrent first logins each run one atomic batch (a single libSQL
  * transaction) of "insert file ON CONFLICT DO NOTHING" + "insert missing
- * sections ON CONFLICT DO NOTHING", then re-select the winning row. The same
- * batch backfills a file that is missing sections. Steady state is read-only.
+ * sections ON CONFLICT DO NOTHING" + "insert missing checklist items ON
+ * CONFLICT DO NOTHING", then re-select the winning row. The same batch
+ * backfills a file created before a section or item existed. Steady state is
+ * read-only.
  */
 export async function ensureHouseholdFile(userId: string) {
   const existing = await findFile(userId);
-  if (existing && (await sectionCount(existing.id)) >= SECTION_DEFS.length) {
+  if (
+    existing &&
+    (await sectionCount(existing.id)) >= SECTION_DEFS.length &&
+    (await checklistCount(existing.id)) >= CHECKLIST_SEED_TOTAL
+  ) {
     return existing;
   }
 
@@ -64,6 +99,7 @@ export async function ensureHouseholdFile(userId: string) {
       })
       .onConflictDoNothing({ target: householdFiles.userId }),
     db.run(seedSectionsSql(userId)),
+    db.run(seedChecklistSql(userId)),
   ]);
 
   return (await findFile(userId))!;

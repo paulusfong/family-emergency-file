@@ -1,32 +1,27 @@
+import { STRYKER_MUTATE } from "./scripts/ci-changed.mjs";
+
 const scopedMutate = process.env.STRYKER_MUTATE?.split(",").map((s) => s.trim()).filter(Boolean);
 const scopedTestCommand = process.env.STRYKER_TEST_COMMAND;
+
+// Cap each mutant's test processes (node --test children inherit NODE_OPTIONS).
+// A mutant that turns autosave's retry into an endless loop otherwise grows to
+// 3+ GB per worker and takes the CI runner down; capped, it dies in seconds
+// with a non-zero exit, which Stryker counts as killed.
+const HEAP_CAP = "NODE_OPTIONS=--max-old-space-size=512";
 
 /** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 const config = {
   packageManager: "npm",
   testRunner: "command",
   commandRunner: {
-    command: scopedTestCommand || "npm test",
+    // Partial CI narrows this to the tests that import the mutated files.
+    command: `${HEAP_CAP} ${scopedTestCommand || "npm test"}`,
   },
   coverageAnalysis: "off",
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
-  mutate: scopedMutate?.length
-    ? scopedMutate
-    : [
-        "src/lib/**/*.ts",
-        "src/app/actions.ts",
-        "src/proxy.ts",
-        "!src/**/*.test.ts",
-        // Client-only better-auth wrapper; no logic.
-        "!src/lib/auth-client.ts",
-        // better-auth config object; behaviour covered via auth.coverage.test.ts.
-        "!src/lib/auth.ts",
-        // Drizzle table declarations; FK/index shape asserted in schema.test.ts.
-        "!src/lib/schema.ts",
-        // libsql client bootstrap; resolveDbCredentials is covered by db.coverage.test.ts.
-        "!src/lib/db.ts",
-      ],
+  // Default list lives in scripts/ci-changed.mjs; partial CI sets STRYKER_MUTATE.
+  mutate: scopedMutate?.length ? scopedMutate : STRYKER_MUTATE,
   reporters: ["progress", "clear-text", "html"],
   thresholds: {
     high: 100,

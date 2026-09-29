@@ -103,17 +103,41 @@ export const ENTRY_TYPES = [
 ] as const;
 export type EntryType = (typeof ENTRY_TYPES)[number];
 
-export const entries = sqliteTable("entries", {
-  id: text("id").primaryKey(),
-  sectionId: text("section_id")
-    .notNull()
-    .references(() => sections.id, { onDelete: "cascade" }),
-  entryType: text("entry_type", { enum: ENTRY_TYPES }).notNull(),
-  label: text("label").notNull(),
-  payloadJson: text("payload_json").notNull().default("{}"),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
-  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
-});
+export const entries = sqliteTable(
+  "entries",
+  {
+    id: text("id").primaryKey(),
+    sectionId: text("section_id")
+      .notNull()
+      .references(() => sections.id, { onDelete: "cascade" }),
+    entryType: text("entry_type", { enum: ENTRY_TYPES }).notNull(),
+    label: text("label").notNull(),
+    payloadJson: text("payload_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  },
+  (t) => [index("entries_section_id").on(t.sectionId)],
+);
+
+export const CHECKLIST_STATUS = ["open", "done", "skipped"] as const;
+export type ChecklistStatus = (typeof CHECKLIST_STATUS)[number];
+
+export const checklistItems = sqliteTable(
+  "checklist_items",
+  {
+    id: text("id").primaryKey(),
+    sectionId: text("section_id")
+      .notNull()
+      .references(() => sections.id, { onDelete: "cascade" }),
+    itemKey: text("item_key").notNull(),
+    label: text("label").notNull(),
+    status: text("status", { enum: CHECKLIST_STATUS }).notNull().default("open"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  },
+  (t) => [uniqueIndex("checklist_items_section_key").on(t.sectionId, t.itemKey)],
+);
 
 /** Canonical S1–S12 titles for the Family Emergency File. */
 export const SECTION_DEFS = [

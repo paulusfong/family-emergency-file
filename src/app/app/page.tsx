@@ -33,8 +33,8 @@ export default async function DashboardPage() {
           ))}
         </ul>
         <p className="disclaimer">
-          Checklist items and entry forms arrive in the next release. Section
-          links open placeholder pages for now.
+          Open a section to work through its checklist and record where things
+          are. Never store passwords, PINs, or full account numbers.
         </p>
       </section>
     </Shell>
