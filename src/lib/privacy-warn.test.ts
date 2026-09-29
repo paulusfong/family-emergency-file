@@ -263,7 +263,9 @@ describe("scanText", () => {
       reason: "secret_token",
       message: SECRET_WARNING,
     });
-    assert.equal(reason("api key a8f5f167f44f4964e6c998dee827110c"), "secret_token");
+    assert.equal(reason("api key 9f86d081884c7d659a2feaa0c55ad015"), "secret_token");
+    // Single letters join digit groups for the SSN check: 167f44f4964 reads as 167-44-4964.
+    assert.equal(reason("api key a8f5f167f44f4964e6c998dee827110c"), "ssn");
     assert.equal(reason("one\ttwo\nHunter2!x"), "secret_token");
   });
 

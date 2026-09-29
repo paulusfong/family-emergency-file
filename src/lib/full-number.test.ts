@@ -166,7 +166,13 @@ describe("findFullNumber: rule 1, Luhn-valid 13-19 digit runs, no exemptions", (
     assert.equal(findFullNumber("Box 7, 2019, 2020, 2021, 2004"), "full_number");
     assert.equal(findFullNumber("Box 7, +86 138 0013 8002"), "full_number");
     assert.equal(findFullNumber("Box 7, +86 138 0013 8000"), null);
-    assert.equal(findFullNumber("Box 7, +86 138 0013 8002 ext 5"), "full_number");
+    // "ext" joins the 5 onto the phone's digits, which then fail Luhn.
+    assert.equal(findFullNumber("Box 7, +86 138 0013 8002 ext 5"), null);
+  });
+
+  it("checks every loose run for a card, not just the first", () => {
+    assert.equal(findFullNumber("2026-09-29 12305 and 7"), "full_number");
+    assert.equal(findFullNumber("7 and 2026-09-29 12305"), "full_number");
   });
 });
 
@@ -218,7 +224,7 @@ describe("findFullNumber: rule 3, 9+ digits joined across separators", () => {
   ];
   const allows: Row[] = [
     ["eight", "12345678"],
-    ["nine-split-by-letters", "1234 x 56789"],
+    ["nine-split-by-letters", "1234 y 56789"],
     ["phone-paren", "(404) 555-0123"],
     ["phone-intl", "+1 404 555 0123"],
     ["uk", "+44 20 7946 0958"],
@@ -229,6 +235,11 @@ describe("findFullNumber: rule 3, 9+ digits joined across separators", () => {
     ["zip4", "30301-1234"],
     ["zip4-in-address", "Atlanta, GA 30301-1234"],
     ["policy", "POL-AB12C-7788"],
+    ["vin-honda", "1HGCM82633A004352"],
+    ["vin-acura", "JH4KA7561PC008269"],
+    ["vin-in-text", "VIN 1HGCM82633A004352 (2003 Accord)"],
+    ["serial", "SN: C02XK1ABJG5H"],
+    ["policy-id", "HO3-4471-AZ"],
     ["date", "2026-09-29"],
     ["last4", "1234"],
     ["", ""],
@@ -255,8 +266,77 @@ describe("findFullNumber: rule 3, 9+ digits joined across separators", () => {
     assert.equal(findFullNumber("404 555 0123, 1, 404 555 0199, 2, (404) 555-0100"), null);
   });
 
-  it("ends a run at a letter", () => {
-    assert.equal(findFullNumber("4111 1111 a 1111 1111"), null);
+  it("ends a run at a word, and joins across a single letter only for Luhn and SSN", () => {
+    assert.equal(findFullNumber("4111 1111 ab 1111 1111"), null);
+    assert.equal(findFullNumber("4111 1111 a 1111 1111"), "full_number");
+  });
+});
+
+describe("findFullNumber: letters and extension markers", () => {
+  it("reads a single letter between digit groups as a separator for the Luhn and SSN checks", () => {
+    assert.equal(findFullNumber("4111a1111b1111c1111"), "full_number");
+    assert.equal(findFullNumber("4111 a 1111 b 1111 c 1111"), "full_number");
+    assert.equal(findFullNumber("4111A1111B1111C1111"), "full_number");
+    assert.equal(findFullNumber("123a45b6789"), "ssn");
+    assert.equal(findFullNumber("123 A 45 B 6789"), "ssn");
+  });
+
+  it("does not join digits across a word of two or more letters", () => {
+    assert.equal(findFullNumber("4111ab1111cd1111ef1111"), null);
+    assert.equal(findFullNumber("123ab45cd6789"), null);
+    assert.equal(findFullNumber("123 45ab 6789"), null);
+  });
+
+  it("does not use single letters to join digits for the 9+ rule", () => {
+    assert.equal(findFullNumber("12345 y 6789"), null);
+    assert.equal(findFullNumber("1G1ZT53826F10914"), null);
+  });
+
+  it("treats an extension marker on its own as a separator for every check", () => {
+    for (const joined of ["12345 x 6789", "12345x6789", "12345 X 6789", "12345 ext 6789", "12345 EXT. 6789"]) {
+      assert.equal(findFullNumber(joined), "ssn", joined);
+    }
+    assert.equal(findFullNumber("4111x1111x1111x1111"), "full_number");
+    assert.equal(findFullNumber("4111 ext 1111 ext 1111 ext 1111"), "full_number");
+    for (const apart of ["12345 xx 6789", "12345 next 6789", "12345 extra 6789", "12345 exts 6789", "12345 xy 6789"]) {
+      assert.equal(findFullNumber(apart), null, apart);
+    }
+  });
+
+  it("allows a formatted phone with an extension", () => {
+    assert.equal(findFullNumber("Call (404) 555-0123 ext 12"), null);
+    assert.equal(findFullNumber("(404) 555-0123 x12"), null);
+  });
+});
+
+describe("findFullNumber: VINs", () => {
+  it("sets aside 17 letters and digits with no I, O, or Q", () => {
+    for (const ok of ["AB123456789012345", "ab123456789012345", "Title: AB123456789012345.", "12345678901234AB5"]) {
+      assert.equal(findFullNumber(ok), null, ok);
+    }
+  });
+
+  it("only sets aside the VIN shape", () => {
+    for (const bad of [
+      "AB12345678901234",
+      "AB1234567890123456",
+      "AI123456789012345",
+      "AO123456789012345",
+      "AQ123456789012345",
+      "12345678901234567",
+      "ZAB123456789012345",
+      "1AB123456789012345",
+      "AB123456789012345C",
+      "AB1234567890123457",
+    ]) {
+      assert.notEqual(findFullNumber(bad), null, bad);
+    }
+  });
+
+  it("still blocks a VIN-shaped value whose single-letter-joined digits pass Luhn", () => {
+    // Every letter stands alone, so the 14 digits form one loose run, and it is Luhn-valid.
+    assert.equal(passesLuhn("11538104123456"), true);
+    assert.equal(findFullNumber("1G1Y53810F4123456"), "full_number");
   });
 });
 
