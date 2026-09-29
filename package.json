@@ -1,0 +1,41 @@
+{
+  "name": "family-emergency-file",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "node --experimental-test-module-mocks --import tsx --import ./src/test/register-css.mjs --test 'src/**/*.test.ts'",
+    "test:coverage": "c8 node --experimental-test-module-mocks --import tsx --import ./src/test/register-css.mjs --test 'src/**/*.test.ts'",
+    "test:mutation": "stryker run",
+    "db:push": "drizzle-kit push"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "better-auth": "^1.7.1",
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/typescript-checker": "^10.0.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "c8": "^12.0.0",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9",
+    "eslint-config-next": "^16.3.4",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.12",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
