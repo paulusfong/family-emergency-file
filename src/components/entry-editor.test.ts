@@ -17,6 +17,9 @@ describe("EntryEditor", async () => {
   type Input = Parameters<Save>[0];
 
   const wait = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  // Compare booleans, never DOM nodes: a failing assert.equal(node, null) makes
+  // node:assert inspect happy-dom's object graph and can grow to many GB.
+  const hasAlert = () => screen.queryByRole("alert") !== null;
 
   function mount(opts: {
     save: Save;
@@ -71,7 +74,7 @@ describe("EntryEditor", async () => {
     assert.equal(screen.getByLabelText("Access plan").tagName, "TEXTAREA");
     assert.equal(screen.getByRole("status").textContent, "Changes save automatically.");
     assert.equal(screen.getByRole("link", { name: "Done" }).getAttribute("href"), "/app/sections/S3");
-    assert.equal(screen.queryByRole("alert"), null);
+    assert.equal(hasAlert(), false);
   });
 
   it("uses email and tel inputs for contacts", () => {
@@ -141,7 +144,7 @@ describe("EntryEditor", async () => {
     offline = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await wait(0);
-    assert.equal(screen.queryByRole("alert"), null);
+    assert.equal(hasAlert(), false);
     assert.equal(screen.getByRole("status").textContent, "All changes saved.");
     assert.equal(calls.length, 2);
     assert.equal(calls[1].entryId, "e-1");
