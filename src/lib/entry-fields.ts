@@ -203,11 +203,11 @@ export function validateEntry(type: EntryType, raw: unknown): ValidatedEntry {
 
 /** Parse stored payload JSON, keeping only this type's known string fields. */
 export function readPayload(type: EntryType, json: string): EntryValues {
-  let parsed: unknown;
+  let parsed: unknown = null;
   try {
     parsed = JSON.parse(json);
   } catch {
-    return {};
+    // Malformed JSON reads as an empty payload.
   }
   const obj = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
   const out: EntryValues = {};

@@ -40,8 +40,8 @@ export async function saveEntry(input: SaveEntryInput): Promise<SaveEntryResult>
   if (!isEntryType(input.entryType)) {
     return { ok: false, status: 400, error: "Unknown entry type." };
   }
+  // A blank or non-string id matches no row, so the update below returns 404.
   const entryId = input.entryId === null ? null : text(input.entryId);
-  if (entryId === "") return NOT_FOUND;
 
   const valid = validateEntry(input.entryType, input.values);
   if (!valid.ok) {
