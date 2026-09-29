@@ -114,7 +114,10 @@ jobs:
     if: needs.plan.outputs.shards != '[]'
     name: mutation (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A shard is whole files, and privacy-warn.ts alone is ~310 mutants, each
+    # run against every test that imports it (the export tests too, once
+    # FEF-4 lands): about 52 minutes on a 4-core runner. 45 cancelled it.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:

@@ -47,7 +47,7 @@ In production (`NODE_ENV=production` or on Vercel) the app fails closed without 
 
 - **plan** (`scripts/ci-changed.mjs`): diffs the PR against its merge base. Mode `full` when `package.json`, `package-lock.json`, `tsconfig.json`, `stryker.config.mjs`, `.c8rc.json`, `scripts/`, `src/test/`, or `drizzle/` changed; `partial` for other `src/` changes; `skip` otherwise (docs, workflow YAML).
 - **test**: lint, `tsc --noEmit`, unit tests (the tests that import a changed file, transitively, in `partial`; everything in `full`), the whole-src 100% coverage gate (every mode, so the whole suite always runs once), and `next build`.
-- **mutation**: Stryker in up to four parallel shards. `full` mutates every target; `partial` only changed targets. Each shard runs the tests that import its files, and each breaks below 90%.
+- **mutation**: Stryker in up to four parallel shards. `full` mutates every target; `partial` only changed targets. Each shard runs the tests that import its files, and each breaks below 90%. A shard may run for up to 90 minutes: shards split by whole files, and `privacy-warn.ts` alone (about 310 mutants, run against every test that imports it) needs close to an hour.
 - **gitleaks**.
 
 ## Env vars
