@@ -72,6 +72,42 @@ describe("entry field definitions", () => {
     assert.equal(ENTRY_TYPE_DEFS.note.fields[0].kind, "textarea");
   });
 
+  it("gives every field that shows helper copy a non-empty placeholder or hint", () => {
+    const withCopy: string[] = [];
+    for (const t of ENTRY_TYPES) {
+      for (const f of ENTRY_TYPE_DEFS[t].fields) {
+        for (const key of ["placeholder", "hint"] as const) {
+          const copy = f[key];
+          if (copy === undefined) continue;
+          assert.ok(copy.trim().length >= 8, `${t}.${f.name}.${key} is too short: "${copy}"`);
+          withCopy.push(`${t}.${f.name}.${key}`);
+        }
+      }
+    }
+    for (const expected of [
+      "contact.relationship.placeholder",
+      "contact.role.placeholder",
+      "account.institution.placeholder",
+      "account.accountType.placeholder",
+      "account.ownership.placeholder",
+      "account.whereToFind.placeholder",
+      "account.accessPlan.hint",
+      "account.whoToCall.placeholder",
+      "policy.institution.placeholder",
+      "policy.policyType.placeholder",
+      "policy.last4.hint",
+      "policy.whereToFind.placeholder",
+      "policy.whoToCall.placeholder",
+      "document_location.whereToFind.placeholder",
+      "document_location.digitalCopy.placeholder",
+      "document_location.whoToCall.placeholder",
+    ]) {
+      assert.ok(withCopy.includes(expected), `missing helper copy: ${expected}`);
+    }
+    assert.match(ENTRY_TYPE_DEFS.account.fields.find((f) => f.name === "accessPlan")!.hint!, /not the password/i);
+    assert.match(ENTRY_TYPE_DEFS.policy.fields.find((f) => f.name === "last4")!.hint!, /last 4/i);
+  });
+
   it("recognises entry types", () => {
     for (const t of ENTRY_TYPES) assert.equal(isEntryType(t), true);
     assert.equal(isEntryType("password"), false);

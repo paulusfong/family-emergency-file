@@ -219,6 +219,23 @@ describe("createAutosaver", () => {
     assert.equal(states.some((s) => s.status === "error"), false);
   });
 
+  it("surfaces a failed queued save once instead of retrying it in a loop", async () => {
+    const gate = deferred<SaveOutcome>();
+    let call = 0;
+    const { saver, states, saves } = setup({
+      // Calls after the first fail; the cap keeps a regression from spinning forever.
+      save: async () => (call++ === 0 ? gate.promise : call > 5 ? { ok: true } : { ok: false, error: "down" }),
+    });
+    saver.schedule({ label: "one" });
+    const done = saver.flush();
+    saver.schedule({ label: "two" });
+    void saver.flush();
+    gate.resolve({ ok: true });
+    await done;
+    assert.deepEqual(saves, [{ label: "one" }, { label: "two" }]);
+    assert.deepEqual(states.at(-1), { status: "error", error: "down", fieldErrors: undefined });
+  });
+
   it("stops emitting and clears timers after dispose", async () => {
     const { saver, states, t } = setup({});
     saver.schedule({ label: "x" });

@@ -156,6 +156,33 @@ describe("ensureHouseholdFile", async () => {
     assert.equal(secs[0].status, "in_progress");
   });
 
+  it("restores a missing section even when extra checklist rows keep the item count high", async () => {
+    const userId = await makeUser("extra-items");
+    const file = await ensureHouseholdFile(userId);
+    const secs = await listSections(file.id);
+    const s12 = secs.find((s) => s.sectionKey === "S12")!;
+    await db.delete(schema.checklistItems).where(eq(schema.checklistItems.sectionId, s12.id));
+    await db.delete(schema.sections).where(eq(schema.sections.id, s12.id));
+    const now = new Date();
+    await db.insert(schema.checklistItems).values(
+      Array.from({ length: CHECKLIST_SEED_TOTAL }, (_, i) => ({
+        id: id(),
+        sectionId: secs[0].id,
+        itemKey: `extra-${i}`,
+        label: `Extra ${i}`,
+        sortOrder: 100 + i,
+        createdAt: now,
+        updatedAt: now,
+      })),
+    );
+    assert.equal((await listSections(file.id)).length, 11);
+
+    await ensureHouseholdFile(userId);
+    const after = await listSections(file.id);
+    assert.equal(after.length, 12);
+    assert.ok(after.some((s) => s.sectionKey === "S12"));
+  });
+
   it("survives five concurrent first logins: one file, twelve sections, no errors", async () => {
     const userId = await makeUser("race");
     const results = await Promise.allSettled(
