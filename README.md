@@ -84,7 +84,11 @@ On the first dashboard visit a non-modal "Access plans, never passwords" sheet e
 
 `src/lib/privacy-warn.ts` is shared by the editor and the server:
 
-- **Block** (`findFullNumber`): SSN-shaped `ddd-dd-dddd` or `ddd dd dddd`; digit runs of 9+ unless phone-shaped (10 digits, or 11 starting with 1); and 13–19 digits written in groups of 4+ (cards, account numbers). The editor shows the error and does not save. `validateEntry` rejects the same text, so a direct POST cannot store it.
-- **Warn** (`looksLikeSecretToken` and label rules): a single token of 8+ characters with a letter and a digit plus mixed case or a symbol and at least 2.5 bits of entropy per character, or 20+ characters at 3.5; `password:` / `pin=` / `passcode #` style labels followed by a value (not a pointer like "in the vault"); `pin 1234`, `cvv 123`; and `password is "…"`. Emails, URLs, and domains are skipped. The editor holds the save and offers "It’s not a secret, save it" for that exact value. The server does not block warnings, because the heuristic can be wrong.
+- **Block** (`findBlocked`): the server's `validateEntry` rejects these and the editor will not autosave them, with no way to confirm past them.
+  - Full numbers (`findFullNumber`): SSN-shaped `ddd-dd-dddd` or `ddd dd dddd`; digit runs of 9+ unless phone-shaped (10 digits, or 11 starting with 1); and 13–19 digits written in groups of 4+ (cards, account numbers).
+  - Labelled credentials: `password`, `passwd`, `passcode`, `pin` (`pin code`, `pin number`), `secret`, `security answer`, `backup code(s)`, `2fa code(s)`, `2fa backup code(s)`, in any case, followed by `:` or `=` and a value. Every label in the text is checked. A pointer (`Password: in the family vault`, `stored`, `kept`, `see`, …), `none`, `n/a`, `tbd`, `unknown`, or punctuation only is not a value.
+- **Warn** (`looksLikeSecretToken` and softer label rules): a single token of 8+ characters with a letter and a digit plus mixed case or a symbol and at least 2.5 bits of entropy per character, or 20+ characters at 3.5; softer labels (`pwd`, `passphrase`, `seed phrase`, `recovery code`, `security code`, `cvv`, `otp`) with `:`, `=`, or `#`, and any credential label with `#`; `pin 1234`, `cvv 123`; and `password is "…"`. Emails, URLs, and domains are skipped. The editor holds the save and offers "It’s not a secret, save it" for that exact value. The server allows warnings, because the heuristic can be wrong.
+
+Autosave never sends a draft while any field has a block-level finding, including an edit made while an earlier save is in flight, and an entry saved before a rule changed will not re-save until the flagged field is fixed.
 
 Last-4, email, and phone fields are validated by their own rules and not scanned.
