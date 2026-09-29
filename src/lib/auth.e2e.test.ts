@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,7 +7,7 @@ import { before, describe, it } from "node:test";
 
 const testdir = fs.mkdtempSync(path.join(os.tmpdir(), "fef-auth-"));
 process.env.DATABASE_URL = `file:${path.join(testdir, "t.sqlite")}`;
-process.env.BETTER_AUTH_SECRET = "0123456789abcdef0123456789abcdef-e2e";
+process.env.BETTER_AUTH_SECRET = randomBytes(32).toString("hex");
 process.env.BETTER_AUTH_URL = "http://localhost:3000";
 (process.env as { NODE_ENV?: string }).NODE_ENV = "test";
 delete process.env.RESEND_API_KEY;

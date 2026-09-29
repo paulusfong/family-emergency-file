@@ -13,10 +13,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      BETTER_AUTH_SECRET: "ci-test-secret-at-least-32-chars-long"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Generate throwaway auth secret
+        run: echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v4
         with:
