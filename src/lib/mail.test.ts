@@ -83,7 +83,7 @@ describe("sendMail", () => {
     assert.equal(errors.length, 0);
   });
 
-  it("logs when Resend returns non-OK", async () => {
+  it("logs status (never the body) and throws when Resend returns non-OK", async () => {
     globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof fetch;
     const errors: unknown[] = [];
     const orig = console.error;
@@ -91,11 +91,14 @@ describe("sendMail", () => {
       errors.push(args);
     };
     try {
-      await sendMail("a@b.co", "Sub", "Text", { RESEND_API_KEY: "rk_test", NODE_ENV: "test" });
+      await assert.rejects(
+        () => sendMail("a@b.co", "Sub", "Text", { RESEND_API_KEY: "rk_test", NODE_ENV: "test" }),
+        /Resend failed with status 500/,
+      );
     } finally {
       console.error = orig;
     }
-    assert.ok(errors.some((e) => String((e as unknown[])[0]).includes("Resend failed")));
+    assert.deepEqual(errors, [["Resend failed", 500]]);
   });
 
   it("writes last-magic-link.txt in non-production when body has a URL", async () => {
