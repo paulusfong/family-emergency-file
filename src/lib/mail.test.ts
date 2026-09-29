@@ -144,11 +144,14 @@ describe("sendMail", () => {
 
   it("uses process.env default when env arg omitted", async () => {
     const orig = console.log;
+    const origKey = process.env.RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
     console.log = () => {};
     try {
       await sendMail("x@y.z", "s", "plain text only");
     } finally {
       console.log = orig;
+      if (origKey !== undefined) process.env.RESEND_API_KEY = origKey;
     }
   });
 });
