@@ -120,9 +120,15 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
       cancelTimer();
       return run();
     },
+    /**
+     * Stops reporting state. An edit still waiting on its timer is sent now,
+     * so leaving the editor does not drop it; nothing else is retried.
+     */
     dispose() {
       disposed = true;
+      if (timer === null) return;
       cancelTimer();
+      void run();
     },
     /**
      * Re-arms a disposed saver. React StrictMode runs every effect's cleanup

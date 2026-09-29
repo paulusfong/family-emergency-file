@@ -182,14 +182,66 @@ describe("EntryEditor", async () => {
     assert.equal(label.getAttribute("aria-invalid"), null);
   });
 
-  it("edits note text in a textarea and stops after unmount", async () => {
+  it("edits note text in a textarea and saves the pending edit on unmount", async () => {
     const { calls, save } = recorder(() => ({ ok: true, entryId: "n-1" }));
     const view = mount({ type: "note", save, entryId: "n-1", initialValues: { label: "First week" } });
     assert.equal((screen.getByLabelText("Title (required)") as HTMLInputElement).value, "First week");
     fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Call Pat first" } });
     view.unmount();
     await wait(20);
+    assert.deepEqual(calls, [
+      { sectionKey: "S3", entryType: "note", entryId: "n-1", values: { label: "First week", notes: "Call Pat first" } },
+    ]);
+  });
+
+  it("does not save on unmount when nothing is pending, even under StrictMode", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "n-1" }));
+    const view = mount({ type: "note", save, entryId: "n-1", initialValues: { label: "First week" }, strict: true });
+    assert.equal(screen.getByRole("status").textContent, "All changes saved.");
+    view.unmount();
+    await wait(20);
     assert.deepEqual(calls, []);
+  });
+
+  it("does not rewrite the URL when a new entry's flushed save lands after unmount", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-9" }));
+    const view = mount({ save });
+    fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint checking" } });
+    view.unmount();
+    await wait(20);
+    assert.equal(calls.length, 1);
+    assert.equal(window.location.pathname, "/app/sections/S3/entries/new");
+  });
+
+  it("asks before the tab closes while an edit is pending, saving, or failed", async () => {
+    let fail = false;
+    let release: () => void = () => {};
+    const save: Save = async () => {
+      if (fail) return { ok: false, status: 500, error: "Couldn't save right now. Please retry." };
+      await new Promise<void>((r) => (release = r));
+      return { ok: true, entryId: "e-3" };
+    };
+    mount({ save, entryId: "e-3", initialValues: { label: "Card" } });
+    const unload = () => {
+      const event = new window.Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    assert.equal(unload(), false);
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Main St" } });
+    assert.equal(screen.getByRole("status").textContent, "Unsaved changes…");
+    assert.equal(unload(), true);
+    await wait(20);
+    assert.equal(screen.getByRole("status").textContent, "Saving…");
+    assert.equal(unload(), true);
+    await act(async () => release());
+    assert.equal(screen.getByRole("status").textContent, "All changes saved.");
+    assert.equal(unload(), false);
+    fail = true;
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Oak St" } });
+    await wait(20);
+    assert.equal(screen.getByRole("status").textContent, "Not saved.");
+    assert.equal(unload(), true);
   });
 
   describe("QA-4: autosave status under React StrictMode", () => {

@@ -264,6 +264,32 @@ describe("createAutosaver", () => {
     assert.deepEqual(states.at(-1), { status: "error", error: "down", fieldErrors: undefined });
   });
 
+  it("sends an edit still waiting on its timer when disposed, without emitting", async () => {
+    const { saver, states, saves, t } = setup({});
+    saver.schedule({ label: "x" });
+    const before = states.length;
+    saver.dispose();
+    assert.equal(t.size, 0);
+    await saver.flush();
+    assert.deepEqual(saves, [{ label: "x" }]);
+    assert.equal(states.length, before);
+  });
+
+  it("does not retry a failed save on dispose", async () => {
+    let calls = 0;
+    const { saver } = setup({
+      save: async () => {
+        calls++;
+        return { ok: false, error: "rejected" };
+      },
+    });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    saver.dispose();
+    await Promise.resolve();
+    assert.equal(calls, 1);
+  });
+
   it("stops emitting and clears timers after dispose", async () => {
     const { saver, states, t } = setup({});
     saver.schedule({ label: "x" });
@@ -299,5 +325,20 @@ describe("createAutosaver", () => {
     saver.schedule({ label: "b" });
     await new Promise((r) => setTimeout(r, 20));
     assert.deepEqual(saves, ["b"]);
+  });
+
+  it("clears the real timer when a save is flushed early", async () => {
+    const states: string[] = [];
+    const saver = createAutosaver<V>({
+      initial: { label: "" },
+      persisted: false,
+      delayMs: 1,
+      onState: (s) => states.push(s.status),
+      save: async () => ({ ok: true }),
+    });
+    saver.schedule({ label: "a" });
+    await saver.flush();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(states, ["pending", "saving", "saved"]);
   });
 });
