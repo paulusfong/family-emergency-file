@@ -20,6 +20,10 @@ type Props = {
   delayMs?: number;
 };
 
+export const OFFLINE_STATUS = "You're offline. Changes will save when you reconnect.";
+export const OFFLINE_MESSAGE =
+  "You're offline, so changes aren't saved yet. They save when you reconnect, or press Retry.";
+
 const STATUS_TEXT: Record<AutosaveState["status"], string> = {
   idle: "Changes save automatically.",
   blocked: "",
@@ -59,7 +63,24 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
     });
   });
 
-  useEffect(() => () => saver.dispose(), [saver]);
+  const [offline, setOffline] = useState(false);
+
+  useEffect(() => {
+    saver.resume();
+    const sync = () => setOffline(!window.navigator.onLine);
+    const reconnect = () => {
+      sync();
+      void saver.flush();
+    };
+    sync();
+    window.addEventListener("offline", sync);
+    window.addEventListener("online", reconnect);
+    return () => {
+      window.removeEventListener("offline", sync);
+      window.removeEventListener("online", reconnect);
+      saver.dispose();
+    };
+  }, [saver]);
 
   const change = (name: string, value: string) => {
     const next = { ...values, [name]: value };
@@ -68,10 +89,14 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
   };
 
   const errors = state.fieldErrors ?? {};
-  const statusText =
-    state.status === "blocked"
+  const failed = state.status === "error";
+  // Offline never reads as saved: the status says so and a toast offers Retry.
+  const statusText = offline && !failed
+    ? OFFLINE_STATUS
+    : state.status === "blocked"
       ? `Fill in “${def.labelField.label}” to start saving.`
       : STATUS_TEXT[state.status];
+  const toast = failed ? state.error : offline ? OFFLINE_MESSAGE : null;
 
   const renderField = (field: FieldDef, label: string, required = false) => {
     const fieldId = `field-${field.name}`;
@@ -124,7 +149,7 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
 
   return (
     <form
-      className="entry-form"
+      className={toast ? "entry-form has-toast" : "entry-form"}
       aria-label={`${def.title} details`}
       onSubmit={(e) => {
         e.preventDefault();
@@ -151,9 +176,9 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
         </p>
       </div>
 
-      {state.status === "error" ? (
+      {toast ? (
         <div className="toast toast-error" role="alert">
-          <p>{state.error}</p>
+          <p>{toast}</p>
           <button type="button" onClick={() => void saver.flush()}>
             Retry
           </button>

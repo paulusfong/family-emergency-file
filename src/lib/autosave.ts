@@ -74,11 +74,14 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
       await run();
       return;
     }
-    emit(
-      outcome.ok
-        ? { status: "saved" }
-        : { status: "error", error: outcome.error, fieldErrors: outcome.fieldErrors },
-    );
+    if (!outcome.ok) {
+      emit({ status: "error", error: outcome.error, fieldErrors: outcome.fieldErrors });
+      return;
+    }
+    // An edit made during the save is either waiting on its timer or blocked;
+    // report that instead of claiming everything is saved.
+    if (JSON.stringify(latest) === key) emit({ status: "saved" });
+    else emit({ status: canSave(latest) ? "pending" : "blocked" });
   }
 
   function run(): Promise<void> {
@@ -120,6 +123,14 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
     dispose() {
       disposed = true;
       cancelTimer();
+    },
+    /**
+     * Re-arms a disposed saver. React StrictMode runs every effect's cleanup
+     * and then the effect again on mount; without this the second mount keeps
+     * a saver that silently drops every state change.
+     */
+    resume() {
+      disposed = false;
     },
   };
 }

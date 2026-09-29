@@ -202,6 +202,34 @@ describe("createAutosaver", () => {
     );
   });
 
+  it("reports blocked, not saved, when an edit during a save cannot be saved", async () => {
+    const gate = deferred<SaveOutcome>();
+    const { saver, states, saves, t } = setup({ save: () => gate.promise, canSave: (v) => !v.label.includes("secret") });
+    saver.schedule({ label: "one" });
+    const inFlight = saver.flush();
+    saver.schedule({ label: "one secret" });
+    gate.resolve({ ok: true });
+    await inFlight;
+    assert.deepEqual(saves, [{ label: "one" }]);
+    assert.equal(t.size, 0);
+    assert.deepEqual(states.at(-1), { status: "blocked" });
+  });
+
+  it("reports pending, not saved, when a saveable edit is waiting on its timer", async () => {
+    const gate = deferred<SaveOutcome>();
+    const { saver, states, saves, t } = setup({ save: (v) => (v.label === "one" ? gate.promise : Promise.resolve({ ok: true })) });
+    saver.schedule({ label: "one" });
+    const inFlight = saver.flush();
+    saver.schedule({ label: "two" });
+    gate.resolve({ ok: true });
+    await inFlight;
+    assert.deepEqual(states.at(-1), { status: "pending" });
+    t.fire();
+    await tick();
+    assert.deepEqual(saves, [{ label: "one" }, { label: "two" }]);
+    assert.deepEqual(states.at(-1), { status: "saved" });
+  });
+
   it("retries the latest value after a failed save that had queued edits", async () => {
     const gate = deferred<SaveOutcome>();
     let call = 0;
@@ -244,6 +272,15 @@ describe("createAutosaver", () => {
     assert.equal(t.size, 0);
     await saver.flush();
     assert.equal(states.length, before);
+  });
+
+  it("QA-4: emits again after resume, as a StrictMode remount needs", async () => {
+    const { saver, states } = setup({ save: async () => ({ ok: false, error: "rejected" }) });
+    saver.dispose();
+    saver.resume();
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    assert.deepEqual(states.at(-1), { status: "error", error: "rejected", fieldErrors: undefined });
   });
 
   it("uses real timers by default", async () => {
