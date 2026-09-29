@@ -28,16 +28,24 @@ export const SECRET_WARNING =
 
 /*
  * Full numbers. The text is normalized first (NFKC, so fullwidth digits become
- * ASCII; zero-width characters removed; every decimal digit mapped to 0-9), and
- * anything that is not a letter or a digit counts as a separator. A "run" is
- * the digits joined across separators, so "4111 - 1111_1111\t1111" is one
- * 16-digit run. Letters end a run.
+ * ASCII; zero-width characters removed; every decimal digit mapped to 0-9). A
+ * "run" is digits joined across separators, so "4111 - 1111_1111\t1111" is one
+ * 16-digit run. Anything that is not a letter or a digit is a separator, and so
+ * is an extension marker ("x", "ext") on its own. Other letters end a run,
+ * except in the loose runs used for the Luhn and SSN checks, where a single
+ * letter between digit groups ("4111a1111b1111c1111") is a separator too. A
+ * word of two or more letters ends every run, so VINs, serials, and policy IDs
+ * ("1HGCM82633A004352", "HO3-4471-AZ") do not join into long numbers.
  */
 const ZERO_WIDTH_RE = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
 const DIGIT_RE = /\p{Nd}/gu;
-const RUN_RE = /[0-9](?:[^\p{L}0-9]*[0-9])*/gu;
+const SEP = "[^\\p{L}0-9]|(?:x|ext)(?!\\p{L})";
+const LOOSE_SEP = "[^\\p{L}0-9]|(?:\\p{L}|ext)(?!\\p{L})";
+const runRe = (sep: string) => new RegExp(`[0-9](?:(?:${sep})*[0-9])*`, "giu");
+const RUN_RE = runRe(SEP);
+const LOOSE_RUN_RE = runRe(LOOSE_SEP);
 const NON_DIGIT_RE = /[^0-9]/g;
-const SSN_RE = /(?<![0-9])[0-9]{3}[^\p{L}0-9]+[0-9]{2}[^\p{L}0-9]+[0-9]{4}(?![0-9])/u;
+const SSN_RE = new RegExp(`(?<![0-9])[0-9]{3}(?:${LOOSE_SEP})+[0-9]{2}(?:${LOOSE_SEP})+[0-9]{4}(?![0-9])`, "iu");
 const MIN_BARE_RUN = 9;
 /** Luhn doubling of each digit, digit sum taken. */
 const LUHN_DOUBLED = [0, 2, 4, 6, 8, 1, 3, 5, 7, 9];
@@ -61,7 +69,10 @@ const AMOUNT_RE =
   /(?<![0-9,.])(?:\$[0-9]{1,3}(?:,[0-9]{3}){1,3}|[0-9]{1,3}(?:,[0-9]{3}){1,3}\.[0-9]{2}|[0-9]{1,8}\.[0-9]{2}|\$[0-9]{1,8})(?![0-9,]|\.[0-9])/g;
 /** Years listed with commas ("2019, 2021, 2024"), or five or more with spaces; four spaced years look like a card. */
 const YEAR_LIST_RE = new RegExp(`(?<![0-9])${YEAR}(?:(?:\\s*,\\s*${YEAR})+|(?:\\s+${YEAR}){4,})(?![0-9])`, "g");
-const MASK = " x ";
+/** A VIN: 17 letters and digits, no I, O, or Q, with at least one letter (17 bare digits stay blocked). */
+const VIN_RE = /(?<![\p{L}0-9])(?=[0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}(?![\p{L}0-9])/giu;
+/** What a set-aside token becomes: a letter that is not an extension marker, so it ends every run. */
+const MASK = " Z ";
 
 /**
  * The value (0-9) of a Unicode decimal digit. Each script's digits are ten
@@ -84,13 +95,13 @@ export function normalizeForScan(text: string) {
 }
 
 /** Digit strings of each run (digits joined across separators). */
-function digitRuns(text: string) {
-  return [...text.matchAll(RUN_RE)].map(([run]) => run.replace(NON_DIGIT_RE, ""));
+function digitRuns(text: string, re = RUN_RE) {
+  return [...text.matchAll(re)].map(([run]) => run.replace(NON_DIGIT_RE, ""));
 }
 
-/** A well-formed token is set aside unless its own digits make a Luhn-valid card number. */
-function holdsCard(token: string) {
-  return digitRuns(token).some(isLuhnCard);
+/** True when a loose run (single letters count as separators) is a Luhn-valid card number. */
+function holdsCard(text: string) {
+  return digitRuns(text, LOOSE_RUN_RE).some(isLuhnCard);
 }
 
 function maskUnlessCard(token: string) {
@@ -124,32 +135,32 @@ export function isFormattedPhone(value: string) {
   );
 }
 
-/** Sets aside formatted phones, dates, ZIP+4s, amounts, and year lists so they do not join into a run. */
+/** Sets aside formatted phones, dates, ZIP+4s, amounts, year lists, and VINs so they do not join into a run. */
 function maskWellFormed(text: string) {
   let out = text;
   // Phones are overwritten with letters of the same length, so later offsets still line up.
   for (const { startsAt, endsAt } of findPhoneNumbersInText(text, { defaultCountry: "US" })) {
     const phone = text.slice(startsAt, endsAt);
     if (isFormattedPhone(phone) && !holdsCard(phone)) {
-      out = out.slice(0, startsAt) + "x".repeat(phone.length) + out.slice(endsAt);
+      out = out.slice(0, startsAt) + "Z".repeat(phone.length) + out.slice(endsAt);
     }
   }
-  for (const re of [DATE_RE, ZIP4_RE, AMOUNT_RE, YEAR_LIST_RE]) out = out.replace(re, maskUnlessCard);
+  for (const re of [DATE_RE, ZIP4_RE, AMOUNT_RE, YEAR_LIST_RE, VIN_RE]) out = out.replace(re, maskUnlessCard);
   return out;
 }
 
 /**
  * Full account, card, or SSN shapes, the same in every field (phone and
  * email included), in order:
- * 1. any 13-19 digit run that passes Luhn, with no exemptions;
- * 2. an SSN layout (3-2-4 digits, any separators);
+ * 1. any 13-19 digit loose run that passes Luhn, with no exemptions;
+ * 2. an SSN layout (3-2-4 digits; any separators, single letters included);
  * 3. once well-formed tokens are set aside (formatted valid phones, dates,
- *    ZIP+4s, amounts, year lists; none of them Luhn-valid), any run of 9+
- *    digits. A phone written as a bare run ("4045550123") is not set aside.
+ *    ZIP+4s, amounts, year lists, VINs; none of them Luhn-valid), any run of
+ *    9+ digits. A phone written as a bare run ("4045550123") is not set aside.
  */
 export function findFullNumber(raw: string): PrivacyReason | null {
   const text = normalizeForScan(raw);
-  if (digitRuns(text).some(isLuhnCard)) return "full_number";
+  if (holdsCard(text)) return "full_number";
   if (SSN_RE.test(text)) return "ssn";
   const run = digitRuns(maskWellFormed(text)).find((d) => d.length >= MIN_BARE_RUN);
   if (run === undefined) return null;
