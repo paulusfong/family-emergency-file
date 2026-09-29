@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  CREDENTIAL_ERROR,
   FULL_NUMBER_ERROR,
   SECRET_WARNING,
   entropyPerChar,
+  findBlocked,
   findFullNumber,
   looksLikeSecretToken,
   pendingFindings,
@@ -145,33 +147,69 @@ describe("scanText", () => {
       assert.equal(scanText(`Recovery codes: ${word} the fire safe`), null, word);
     }
     assert.equal(scanText("PIN: In the envelope"), null);
+    assert.equal(scanText("Password: stored in Example Password Manager"), null);
     assert.equal(scanText("Backup code: (in the safe)"), null);
   });
 
-  it("warns on labelled secrets", () => {
+  it("blocks a value written after an explicit credential label", () => {
     for (const bad of [
       "password: hunter",
+      "password: Tr0ub4dor&3",
+      "PASSWORD:hunter2",
+      "password = Tr0ub4dor&3",
       "Passwd=hunter",
-      "pwd # hunter",
       "passcode: 0000",
-      "Passphrase: correct horse",
       "my PIN: 0000",
+      "PIN=4821",
       "pin code: 4821",
       "PIN number: 4821",
       "secret: abc",
       "Security answer: Fluffy",
+      "security answers = Fluffy",
+      "backup code: abcd",
+      "Backup codes: abcd efgh",
+      "2FA code: 123456",
+      "2fa codes=123456",
+      "2fa backup code: abcd",
+      "Password: ñandú",
+    ]) {
+      assert.deepEqual(scanText(bad), { level: "block", reason: "credential", message: CREDENTIAL_ERROR }, bad);
+    }
+  });
+
+  it("checks every credential label in the text, not just the first", () => {
+    assert.equal(reason("Password: in the family vault. PIN: 4821"), "credential");
+    assert.equal(reason("Recovery code: in the safe; otp: 1x"), "secret_label");
+  });
+
+  it("does not block a label with no real value after it", () => {
+    for (const text of ["password:", "Password: ...", "PIN: ***", "password: -", "Password: N/A", "PIN: none", "Secret: TBD", "Password: unknown"]) {
+      assert.equal(scanText(text), null, text);
+    }
+  });
+
+  it("only warns on softer labels and on '#' after a credential label", () => {
+    for (const bad of [
+      "password # hunter",
+      "pwd # hunter",
+      "pwd: hunter",
+      "Passphrase: correct horse",
       "security code: 12",
       "seed phrase = apple banana",
       "recovery phrase: apple banana",
       "recovery code: abcd",
-      "backup codes: abcd",
-      "backup code: abcd",
       "cvv: 12",
       "CVC: 12",
       "otp: abc",
     ]) {
       assert.deepEqual(scanText(bad), { level: "warn", reason: "secret_label", message: SECRET_WARNING }, bad);
     }
+  });
+
+  it("does not read ordinary 'label: value' text as a credential", () => {
+    assert.equal(scanText("Branch: Main St"), null);
+    assert.equal(scanText("Spin: weekly"), null);
+    assert.equal(scanText("Passwords: see the family vault"), null);
   });
 
   it("warns on 'is/was' phrasing only when the value looks like a secret", () => {
@@ -229,7 +267,8 @@ describe("scanField", () => {
 
   it("scans text and textarea fields", () => {
     assert.equal(scanField("text", "123456789")?.level, "block");
-    assert.equal(scanField("textarea", "password: hunter2")?.level, "warn");
+    assert.equal(scanField("textarea", "pwd: hunter2")?.level, "warn");
+    assert.equal(scanField("textarea", "password: hunter2")?.level, "block");
     assert.equal(scanField("text", "Example Bank"), null);
   });
 });
@@ -242,16 +281,16 @@ describe("pendingFindings", () => {
   ];
 
   it("reports block and warn findings per field", () => {
-    assert.deepEqual(pendingFindings(fields, { label: "Acct 123456789", notes: "password: hunter2" }, {}), {
+    assert.deepEqual(pendingFindings(fields, { label: "Acct 123456789", notes: "pwd: hunter2" }, {}), {
       label: { level: "block", reason: "ssn", message: FULL_NUMBER_ERROR },
       notes: { level: "warn", reason: "secret_label", message: SECRET_WARNING },
     });
   });
 
   it("releases a warning once that exact value is confirmed, and re-checks edits", () => {
-    const values = { label: "Email", notes: "password: hunter2" };
-    assert.deepEqual(pendingFindings(fields, values, { notes: "password: hunter2" }), {});
-    assert.deepEqual(Object.keys(pendingFindings(fields, { ...values, notes: "password: hunter3" }, { notes: "password: hunter2" })), [
+    const values = { label: "Email", notes: "pwd: hunter2" };
+    assert.deepEqual(pendingFindings(fields, values, { notes: "pwd: hunter2" }), {});
+    assert.deepEqual(Object.keys(pendingFindings(fields, { ...values, notes: "pwd: hunter3" }, { notes: "pwd: hunter2" })), [
       "notes",
     ]);
   });
@@ -259,6 +298,8 @@ describe("pendingFindings", () => {
   it("never releases a block, even if confirmed", () => {
     const values = { label: "Card", notes: "4111 1111 1111 1111" };
     assert.deepEqual(Object.keys(pendingFindings(fields, values, { notes: values.notes })), ["notes"]);
+    const credential = { label: "Email", notes: "password: hunter2" };
+    assert.deepEqual(Object.keys(pendingFindings(fields, credential, { notes: credential.notes })), ["notes"]);
   });
 
   it("treats missing values as empty and skips unscanned kinds", () => {
@@ -285,9 +326,13 @@ describe("rule boundaries", () => {
   it("treats every pointer word after a secret label as a pointer", () => {
     const words = ["in", "at", "on", "inside", "kept", "stored", "see", "ask", "printed"];
     words.push("written", "saved", "held", "via", "under", "located", "lives");
+    words.push("none", "n/a", "tbd", "unknown");
     const flagged = words.filter((w) => level(`password: ${w.toUpperCase()} the family vault`) !== null);
     assert.deepEqual(flagged, []);
-    assert.equal(level("password: somewhere"), "warn");
+    const softFlagged = words.filter((w) => level(`Recovery code: ${w.toUpperCase()} the fire safe`) !== null);
+    assert.deepEqual(softFlagged, []);
+    assert.equal(level("password: somewhere"), "block");
+    assert.equal(level("recovery code: somewhere"), "warn");
   });
 
   it("reads PIN and card codes written with no space", () => {
@@ -332,5 +377,15 @@ describe("rule boundaries", () => {
   it("does not scan email fields, even when the text would warn elsewhere", () => {
     assert.equal(scanField("text", "pin1234@example.com")?.level, "warn");
     assert.equal(scanField("email", "pin1234@example.com"), null);
+  });
+});
+
+describe("findBlocked", () => {
+  it("returns only block-level findings, which the server enforces", () => {
+    assert.deepEqual(findBlocked("password: Tr0ub4dor&3"), { level: "block", reason: "credential", message: CREDENTIAL_ERROR });
+    assert.deepEqual(findBlocked("4111 1111 1111 1111"), { level: "block", reason: "full_number", message: FULL_NUMBER_ERROR });
+    assert.equal(findBlocked("Tr0ub4dor&3"), null);
+    assert.equal(findBlocked("pwd: hunter2"), null);
+    assert.equal(findBlocked("Example Bank"), null);
   });
 });

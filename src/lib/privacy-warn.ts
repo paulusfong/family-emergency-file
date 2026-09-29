@@ -3,19 +3,23 @@
  * save) and the server (validateEntry). The app stores pointers and metadata,
  * never secrets, so two levels:
  *
- * - "block": text shaped like a full account, card, or Social Security number.
- *   The server rejects it and the editor will not autosave it.
+ * - "block": text shaped like a full account, card, or Social Security number,
+ *   or a value written after an explicit credential label ("password: …",
+ *   "PIN=…"). The server rejects it and the editor will not autosave it.
  * - "warn": text that looks like a password, PIN, or token. The editor holds
  *   the save until the person confirms it is not a secret; the server allows
  *   it because a heuristic can be wrong.
  */
 
 export type PrivacyLevel = "block" | "warn";
-export type PrivacyReason = "full_number" | "ssn" | "secret_label" | "secret_token";
+export type PrivacyReason = "full_number" | "ssn" | "credential" | "secret_label" | "secret_token";
 export type PrivacyFinding = { level: PrivacyLevel; reason: PrivacyReason; message: string };
 
 export const FULL_NUMBER_ERROR =
   "This looks like a full account, card, or ID number. Store the last 4 digits at most.";
+
+export const CREDENTIAL_ERROR =
+  "This is labelled as a password, PIN, or other credential. Write down where it is kept, never the value itself.";
 
 export const SECRET_WARNING =
   "This looks like a password, PIN, or other secret. Keep it in your password manager and write down where it lives instead.";
@@ -59,13 +63,22 @@ export function findFullNumber(text: string): PrivacyReason | null {
   return hasGroupedCardNumber(text) ? "full_number" : null;
 }
 
+/**
+ * Labels that name a credential outright. "label: value" or "label=value" is
+ * blocked, unless the value is a pointer ("Password: in the family vault").
+ */
+const CREDENTIAL_LABELS =
+  "password|passwd|passcode|pin(?: code| number)?|secret|security answers?|(?:2fa )?backup codes?|2fa codes?";
+const CREDENTIAL_RE = new RegExp(`\\b(?:${CREDENTIAL_LABELS})\\s*[:=]\\s*(\\S+)`, "gi");
+/** Softer labels, and any label with "#", only warn. */
 const SECRET_LABELS =
   "password|passwd|pwd|passcode|passphrase|pin(?: code| number)?|secret|security (?:code|answer)|seed phrase|recovery (?:phrase|code)|backup codes?|cvv|cvc|otp";
-const LABEL_WITH_VALUE_RE = new RegExp(`\\b(?:${SECRET_LABELS})\\s*[:=#]\\s*(\\S+)`, "i");
+const LABEL_WITH_VALUE_RE = new RegExp(`\\b(?:${SECRET_LABELS})\\s*[:=#]\\s*(\\S+)`, "gi");
 /** "Recovery codes: in the fire safe" is a pointer, which is what we want. */
-const POINTER_WORDS = new Set([
+const NOT_A_VALUE = new Set([
   "in", "at", "on", "inside", "kept", "stored", "see", "ask", "printed",
   "written", "saved", "held", "via", "under", "located", "lives",
+  "none", "n/a", "tbd", "unknown",
 ]);
 const LABEL_IS_RE = new RegExp(`\\b(?:${SECRET_LABELS})\\s+(?:is|was)\\s+(["']?)(\\S+)`, "i");
 const CODE_DIGITS_RE = /\b(?:pin\s*#?\s*\d{4,8}|cv[vc]2?\s*#?\s*\d{3,4})\b/i;
@@ -108,9 +121,16 @@ export function looksLikeSecretToken(raw: string) {
   return token.length >= 20 && entropy >= 3.5;
 }
 
+/** True when some "label: value" match carries a real value, not a pointer or blank. */
+function hasLabelledValue(re: RegExp, text: string) {
+  return [...text.matchAll(re)].some(([, raw]) => {
+    const value = raw.replace(EDGE_PUNCT_RE, "").toLowerCase();
+    return /[\p{L}\p{N}]/u.test(value) && !NOT_A_VALUE.has(value);
+  });
+}
+
 function hasSecretLabel(text: string) {
-  const labelled = LABEL_WITH_VALUE_RE.exec(text);
-  if (labelled && !POINTER_WORDS.has(labelled[1].replace(EDGE_PUNCT_RE, "").toLowerCase())) return true;
+  if (hasLabelledValue(LABEL_WITH_VALUE_RE, text)) return true;
   if (CODE_DIGITS_RE.test(text)) return true;
   const is = LABEL_IS_RE.exec(text);
   if (!is) return false;
@@ -122,11 +142,18 @@ function hasSecretLabel(text: string) {
 export function scanText(text: string): PrivacyFinding | null {
   const full = findFullNumber(text);
   if (full) return { level: "block", reason: full, message: FULL_NUMBER_ERROR };
+  if (hasLabelledValue(CREDENTIAL_RE, text)) return { level: "block", reason: "credential", message: CREDENTIAL_ERROR };
   if (hasSecretLabel(text)) return { level: "warn", reason: "secret_label", message: SECRET_WARNING };
   if (text.split(/\s/).some(looksLikeSecretToken)) {
     return { level: "warn", reason: "secret_token", message: SECRET_WARNING };
   }
   return null;
+}
+
+/** The block-level finding the server enforces, or null (warnings are allowed). */
+export function findBlocked(text: string): PrivacyFinding | null {
+  const finding = scanText(text);
+  return finding?.level === "block" ? finding : null;
 }
 
 /** Field kinds with their own strict format are not scanned. */

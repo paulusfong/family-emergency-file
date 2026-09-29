@@ -13,7 +13,7 @@ describe("EntryEditor", async () => {
   const { EntryEditor } = await import("./entry-editor");
   const { ENTRY_TYPE_DEFS } = await import("@/lib/entry-fields");
   const { NETWORK_ERROR } = await import("@/lib/autosave");
-  const { FULL_NUMBER_ERROR, SECRET_WARNING } = await import("@/lib/privacy-warn");
+  const { CREDENTIAL_ERROR, FULL_NUMBER_ERROR, SECRET_WARNING } = await import("@/lib/privacy-warn");
   type Save = Parameters<typeof EntryEditor>[0]["save"];
   type Input = Parameters<Save>[0];
 
@@ -200,7 +200,7 @@ describe("EntryEditor", async () => {
     const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
     mount({ save });
     fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint checking" } });
-    fireEvent.change(screen.getByLabelText("Access plan"), { target: { value: "password: hunter2" } });
+    fireEvent.change(screen.getByLabelText("Access plan"), { target: { value: "Login Tr0ub4dor&3" } });
     const plan = screen.getByLabelText("Access plan");
     assert.equal(warningText("accessPlan"), `${SECRET_WARNING}It’s not a secret, save it`);
     assert.equal(plan.getAttribute("data-privacy"), "warn");
@@ -217,7 +217,7 @@ describe("EntryEditor", async () => {
     assert.equal(plan.getAttribute("data-privacy"), null);
     await wait(20);
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].values, { label: "Joint checking", accessPlan: "password: hunter2" });
+    assert.deepEqual(calls[0].values, { label: "Joint checking", accessPlan: "Login Tr0ub4dor&3" });
     assert.equal(statusText(), "All changes saved.");
   });
 
@@ -272,11 +272,61 @@ describe("EntryEditor", async () => {
 
   it("treats values loaded from a saved entry as already confirmed", async () => {
     const { calls, save } = recorder(() => ({ ok: true, entryId: "e-1" }));
-    mount({ save, entryId: "e-1", initialValues: { label: "Family email", notes: "password: hunter2" } });
+    mount({ save, entryId: "e-1", initialValues: { label: "Family email", notes: "Tr0ub4dor&3" } });
     assert.equal(warningText("notes"), null);
     fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Example Mail" } });
     await wait(20);
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].values, { label: "Family email", notes: "password: hunter2", institution: "Example Mail" });
+    assert.deepEqual(calls[0].values, { label: "Family email", notes: "Tr0ub4dor&3", institution: "Example Mail" });
+  });
+
+  it("blocks a labelled credential with no way to confirm it", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save, type: "access_plan" });
+    fireEvent.change(screen.getByLabelText("Account or service (required)"), { target: { value: "Family email" } });
+    const login = screen.getByLabelText("Where the login lives");
+    fireEvent.change(login, { target: { value: "password: Tr0ub4dor&3" } });
+    assert.equal(warningText("loginLocation"), CREDENTIAL_ERROR);
+    assert.equal(confirmButton() === null, true);
+    assert.equal(login.getAttribute("aria-invalid"), "true");
+    assert.equal(login.getAttribute("data-privacy"), "block");
+    fireEvent.blur(login);
+    fireEvent.submit(screen.getByRole("form"));
+    await wait(20);
+    assert.equal(calls.length, 0);
+    assert.equal(statusText(), "Review the flagged field before this saves.");
+  });
+
+  it("does not re-save a stored value that is now blocked, even when another field changes", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "e-1" }));
+    mount({ save, entryId: "e-1", initialValues: { label: "Family email", notes: "password: hunter2" } });
+    assert.equal(warningText("notes"), CREDENTIAL_ERROR);
+    fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Example Mail" } });
+    await wait(20);
+    assert.equal(calls.length, 0);
+  });
+
+  it("never sends a blocked value, even when it is typed while the first draft save is in flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const calls: Input[] = [];
+    const save: Save = async (input) => {
+      calls.push(structuredClone(input));
+      await gate;
+      return { ok: true, entryId: "new-1" };
+    };
+    mount({ save, type: "access_plan" });
+    fireEvent.change(screen.getByLabelText("Account or service (required)"), { target: { value: "Family email" } });
+    await wait(20);
+    assert.equal(calls.length, 1);
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "PIN=4821" } });
+    fireEvent.submit(screen.getByRole("form"));
+    await act(async () => release());
+    await wait(20);
+    assert.deepEqual(
+      calls.map((c) => c.values),
+      [{ label: "Family email" }],
+    );
+    assert.equal(statusText(), "Review the flagged field before this saves.");
   });
 });

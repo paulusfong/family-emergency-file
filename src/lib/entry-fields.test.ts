@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   ENTRY_TYPE_DEFS,
+  CREDENTIAL_ERROR,
   FULL_NUMBER_ERROR,
   LIMITS,
   entrySummary,
@@ -274,10 +275,25 @@ describe("validateEntry", () => {
   });
 
   it("does not block warn-level text on the server; the editor asks first", () => {
-    assert.deepEqual(validateEntry("access_plan", { label: "Family email", recoveryPlan: "password: hunter2" }), {
+    assert.deepEqual(
+      validateEntry("access_plan", { label: "Family email", recoveryPlan: "pwd: hunter2", notes: "Tr0ub4dor&3" }),
+      { ok: true, label: "Family email", payload: { recoveryPlan: "pwd: hunter2", notes: "Tr0ub4dor&3" } },
+    );
+  });
+
+  it("rejects a labelled credential in any text field or the label", () => {
+    assert.deepEqual(
+      validateEntry("access_plan", { label: "Family email", loginLocation: "password: Tr0ub4dor&3", notes: "PIN=4821" }),
+      { ok: false, fieldErrors: { loginLocation: CREDENTIAL_ERROR, notes: CREDENTIAL_ERROR } },
+    );
+    assert.deepEqual(validateEntry("note", { label: "Secret: abc" }), {
+      ok: false,
+      fieldErrors: { label: CREDENTIAL_ERROR },
+    });
+    assert.deepEqual(validateEntry("access_plan", { label: "Family email", loginLocation: "Password: in the family vault" }), {
       ok: true,
       label: "Family email",
-      payload: { recoveryPlan: "password: hunter2" },
+      payload: { loginLocation: "Password: in the family vault" },
     });
   });
 });

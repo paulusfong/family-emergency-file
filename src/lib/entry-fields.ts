@@ -1,5 +1,5 @@
 import { ENTRY_TYPES, type EntryType } from "./schema";
-import { FULL_NUMBER_ERROR, findFullNumber } from "./privacy-warn";
+import { CREDENTIAL_ERROR, FULL_NUMBER_ERROR, findBlocked } from "./privacy-warn";
 
 export type FieldKind = "text" | "textarea" | "last4" | "phone" | "email";
 
@@ -131,7 +131,7 @@ export const ENTRY_TYPE_DEFS: Record<EntryType, EntryTypeDef> = {
 
 export const LIMITS = { label: 120, text: 200, textarea: 2000 } as const;
 
-export { FULL_NUMBER_ERROR };
+export { CREDENTIAL_ERROR, FULL_NUMBER_ERROR };
 
 export type EntryValues = Record<string, string>;
 export type FieldErrors = Record<string, string>;
@@ -151,9 +151,9 @@ export function isEntryType(value: unknown): value is EntryType {
   return (ENTRY_TYPES as readonly unknown[]).includes(value);
 }
 
-/** Block-level privacy finding (full account, card, or SSN shape), else null. */
-function fullNumberError(value: string) {
-  return findFullNumber(value) ? FULL_NUMBER_ERROR : null;
+/** Block-level privacy message (full number or labelled credential), else null. */
+function blockedError(value: string) {
+  return findBlocked(value)?.message ?? null;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -172,7 +172,7 @@ function checkField(def: FieldDef, value: string): string | null {
   if (def.kind === "phone") {
     return PHONE_RE.test(value) ? null : "Enter a phone number using digits, spaces, and + ( ) - only.";
   }
-  return fullNumberError(value);
+  return blockedError(value);
 }
 
 export type ValidatedEntry =
@@ -181,7 +181,8 @@ export type ValidatedEntry =
 
 /**
  * Server-side validation. Accepts only the known fields for the type, trims
- * them, drops blanks, and rejects anything that looks like a full number.
+ * them, drops blanks, and rejects block-level privacy findings (full numbers
+ * and labelled credentials). Warn-level findings are allowed.
  */
 export function validateEntry(type: EntryType, raw: unknown): ValidatedEntry {
   const input = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -202,7 +203,10 @@ export function validateEntry(type: EntryType, raw: unknown): ValidatedEntry {
   if (!fieldErrors.label) {
     if (!label) fieldErrors.label = `${def.labelField.label} is required.`;
     else if (label.length > LIMITS.label) fieldErrors.label = `Keep this under ${LIMITS.label} characters.`;
-    else if (fullNumberError(label)) fieldErrors.label = FULL_NUMBER_ERROR;
+    else {
+      const blocked = blockedError(label);
+      if (blocked) fieldErrors.label = blocked;
+    }
   }
 
   const payload: EntryValues = {};
