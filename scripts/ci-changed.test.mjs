@@ -12,6 +12,7 @@ import {
   isTest,
   main,
   planFromChangedFiles,
+  MAX_SHARDS,
   planShards,
   printMode,
   shardTargets,
@@ -62,16 +63,24 @@ describe("file classification", () => {
     assert.equal(isMutateTarget("src/app/actions.ts"), true);
     assert.equal(isMutateTarget("src/proxy.ts"), true);
     assert.equal(isMutateTarget("src/lib/entries.test.ts"), false);
-    for (const f of ["src/lib/auth.ts", "src/lib/auth-client.ts", "src/lib/schema.ts", "src/lib/db.ts"]) {
+    assert.equal(isMutateTarget("src/app/app/actions.ts"), true);
+    for (const f of [
+      "src/lib/auth.ts",
+      "src/lib/auth-client.ts",
+      "src/lib/schema.ts",
+      "src/lib/db.ts",
+      "src/lib/section-content.ts",
+    ]) {
       assert.equal(isMutateTarget(f), false, f);
       assert.ok(STRYKER_MUTATE.includes(`!${f}`), f);
     }
     assert.equal(isMutateTarget("src/components/entry-editor.tsx"), false);
     assert.equal(isMutateTarget("src/app/app/sections/[key]/page.tsx"), false);
     assert.equal(isMutateTarget("src/lib/view.tsx"), false);
-    assert.deepEqual(STRYKER_MUTATE.slice(0, 5), [
+    assert.deepEqual(STRYKER_MUTATE.slice(0, 6), [
       "src/lib/**/*.ts",
       "src/app/actions.ts",
+      "src/app/app/actions.ts",
       "src/app/app/sections/actions.ts",
       "src/proxy.ts",
       "!src/**/*.test.ts",
@@ -221,23 +230,52 @@ describe("mutation shards", () => {
     ["bc.test.ts", new Set(["b.ts", "c.ts"])],
   ]);
 
-  it("balances files across shards, largest first onto the lightest shard", () => {
-    const shards = planShards(["e.ts", "d.ts", "c.ts", "b.ts", "a.ts"], closureFor, weight, 2);
+  it("isolates a file whose tests are expensive instead of pairing it by size alone", () => {
+    const w = { "a.ts": 100, "b.ts": 100, "c.ts": 10, "d.ts": 10, "heavy.test.ts": 1000, "light.test.ts": 10 };
+    const closure = new Map([
+      ["heavy.test.ts", new Set(["a.ts"])],
+      ["light.test.ts", new Set(["b.ts", "c.ts", "d.ts"])],
+    ]);
+    assert.deepEqual(planShards(["d.ts", "c.ts", "b.ts", "a.ts"], closure, (f) => w[f], 2), [
+      { name: "1-of-2", mutate: "a.ts", tests: "heavy.test.ts" },
+      { name: "2-of-2", mutate: "b.ts,c.ts,d.ts", tests: "light.test.ts" },
+    ]);
+  });
+
+  it("merges the tests of every file in a shard", () => {
+    assert.deepEqual(planShards(["a.ts", "b.ts"], closureFor, weight, 1), [
+      { name: "1-of-1", mutate: "a.ts,b.ts", tests: "a.test.ts bc.test.ts" },
+    ]);
+  });
+
+  it("sends a shard to the whole suite when one of its files has no related tests", () => {
+    assert.deepEqual(planShards(["a.ts", "x.ts"], closureFor, weight, 1), [
+      { name: "1-of-1", mutate: "a.ts,x.ts", tests: "" },
+    ]);
+    assert.deepEqual(planShards(["x.ts", "a.ts"], closureFor, weight, 1)[0].tests, "");
+    assert.deepEqual(planShards(["z.ts"], closureFor, weight)[0].tests, "");
+  });
+
+  it("costs a whole-suite file by every test and picks the cheaper home for the rest", () => {
+    // x.ts (no tests) costs 6 x 10 and goes first; a.ts (10 x 5) opens shard 2.
+    // b.ts then costs 7 x 10 = 70 on x's shard vs 11 x (5 + 5) = 110 on a's.
+    const w = { "a.ts": 10, "x.ts": 6, "a.test.ts": 5, "bc.test.ts": 5 };
+    const shards = planShards(["a.ts", "x.ts", "b.ts"], closureFor, (f) => w[f] ?? 1, 2);
     assert.deepEqual(shards, [
-      { name: "1-of-2", mutate: "a.ts,d.ts,e.ts", tests: "a.test.ts" },
-      { name: "2-of-2", mutate: "b.ts,c.ts", tests: "bc.test.ts" },
+      { name: "1-of-2", mutate: "b.ts,x.ts", tests: "" },
+      { name: "2-of-2", mutate: "a.ts", tests: "a.test.ts" },
     ]);
   });
 
   it("never makes more shards than files, caps at MAX_SHARDS, and breaks ties by name", () => {
+    assert.equal(MAX_SHARDS, 6);
     assert.deepEqual(planShards(["b.ts"], closureFor, weight), [{ name: "1-of-1", mutate: "b.ts", tests: "bc.test.ts" }]);
-    assert.equal(planShards(["1", "2", "3", "4", "5", "6"], closureFor, () => 1).length, 4);
+    assert.equal(planShards(["1", "2", "3", "4", "5", "6", "7"], closureFor, () => 1).length, 6);
     assert.deepEqual(
       planShards(["y.ts", "x.ts"], closureFor, () => 1, 2).map((s) => s.mutate),
       ["x.ts", "y.ts"],
     );
     assert.deepEqual(planShards([], closureFor, weight), []);
-    assert.deepEqual(planShards(["z.ts"], closureFor, weight)[0].tests, "");
   });
 
   it("targets every mutate target in full mode and only changed ones in partial mode", () => {
@@ -319,12 +357,12 @@ describe("git integration", () => {
     });
     assert.equal(out.code, 0);
     assert.deepEqual(JSON.parse(out.text), [
-      { name: "1-of-2", mutate: "src/proxy.ts", tests: "src/proxy.test.ts" },
       {
-        name: "2-of-2",
+        name: "1-of-2",
         mutate: "src/lib/autosave.ts",
         tests: "src/app/app/sections/actions.test.ts src/components/entry-editor.test.ts src/lib/autosave.test.ts",
       },
+      { name: "2-of-2", mutate: "src/proxy.ts", tests: "src/proxy.test.ts" },
     ]);
     const full = fakeGit({ "git merge-base": "m0", "git diff": "package.json", "git ls-files": files.join("\n") });
     const shards = JSON.parse(
