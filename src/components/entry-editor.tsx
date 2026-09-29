@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { createAutosaver, type AutosaveState } from "@/lib/autosave";
+import { reportLostSave } from "@/lib/lost-save";
 import type {
   EntryTypeDef,
   EntryValues,
@@ -57,6 +58,12 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
       canSave: (v) => Boolean(v.label?.trim()),
       delayMs,
       onState: setState,
+      // The flush on leaving the page failed: the /app layout's notice shows it.
+      onLost: (error, v) =>
+        reportLostSave({
+          message: `Your last change to “${v.label}” wasn't saved. ${error}`,
+          href: currentId === null ? null : `${sectionHref}/entries/${currentId}`,
+        }),
       save: async (v) => {
         const res = await save({ sectionKey, entryType: def.type, entryId: currentId, values: v });
         if (res.ok && currentId === null) {
@@ -90,8 +97,10 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
     };
   }, [saver, setMounted]);
 
-  // Closing or reloading the tab with an edit not yet saved asks first.
-  const unsaved = UNSAVED_STATUSES.has(state.status);
+  // Closing or reloading the tab with an edit not yet saved asks first,
+  // including typed content that cannot save yet because the label is blank.
+  const typed = Object.values(values).some((v) => Boolean(v?.trim()));
+  const unsaved = UNSAVED_STATUSES.has(state.status) || (state.status === "blocked" && typed);
   useEffect(() => {
     if (!unsaved) return;
     const warn = (event: BeforeUnloadEvent) => {

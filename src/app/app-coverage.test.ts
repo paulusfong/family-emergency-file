@@ -383,7 +383,8 @@ describe("app coverage", async () => {
     sessionUser = null;
     assert.equal(await redirectOf(() => AppLayout({ children: "secret" })), "/sign-in");
     sessionUser = fakeUser;
-    assert.equal(await AppLayout({ children: "secret" }), "secret");
+    // The lost-save notice renders nothing until a save is lost.
+    assert.equal(await renderElement(await AppLayout({ children: "secret" })), "secret");
   });
 
   it("auth API route handlers respond", async () => {

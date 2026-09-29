@@ -30,6 +30,8 @@ export type AutosaverOptions<V> = {
   /** True when `initial` is already persisted (editing an existing entry). */
   persisted: boolean;
   canSave?: (value: V) => boolean;
+  /** Called when a save fails after dispose(), when no state is emitted any more. */
+  onLost?: (error: string, value: V) => void;
   delayMs?: number;
   timers?: Timers;
 };
@@ -40,7 +42,7 @@ export type AutosaverOptions<V> = {
  * (offline, server unreachable) becomes an error state the UI shows as a toast.
  */
 export function createAutosaver<V>(opts: AutosaverOptions<V>) {
-  const { save, onState, canSave = () => true, delayMs = 800, timers = defaultTimers } = opts;
+  const { save, onState, onLost, canSave = () => true, delayMs = 800, timers = defaultTimers } = opts;
   let latest = opts.initial;
   let lastSaved = opts.persisted ? JSON.stringify(opts.initial) : null;
   let timer: unknown = null;
@@ -75,6 +77,7 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
       return;
     }
     if (!outcome.ok) {
+      if (disposed) onLost?.(outcome.error, value);
       emit({ status: "error", error: outcome.error, fieldErrors: outcome.fieldErrors });
       return;
     }
@@ -122,7 +125,8 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
     },
     /**
      * Stops reporting state. An edit still waiting on its timer is sent now,
-     * so leaving the editor does not drop it; nothing else is retried.
+     * so leaving the editor does not drop it; nothing else is retried. A save
+     * that fails from here on goes to onLost.
      */
     dispose() {
       disposed = true;

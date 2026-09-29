@@ -54,8 +54,10 @@ function setup(opts: {
   initial?: V;
   canSave?: (v: V) => boolean;
   delayMs?: number;
+  noOnLost?: boolean;
 }) {
   const states: AutosaveState[] = [];
+  const lost: [string, V][] = [];
   const saves: V[] = [];
   const t = fakeTimers();
   const saver = createAutosaver<V>({
@@ -65,12 +67,13 @@ function setup(opts: {
     delayMs: opts.delayMs,
     timers: t.timers,
     onState: (s) => states.push(s),
+    onLost: opts.noOnLost ? undefined : (error, v) => lost.push([error, v]),
     save: async (v) => {
       saves.push(v);
       return opts.save ? opts.save(v) : { ok: true };
     },
   });
-  return { saver, states, saves, t };
+  return { saver, states, saves, t, lost };
 }
 
 describe("createAutosaver", () => {
@@ -277,7 +280,7 @@ describe("createAutosaver", () => {
 
   it("does not retry a failed save on dispose", async () => {
     let calls = 0;
-    const { saver } = setup({
+    const { saver, lost } = setup({
       save: async () => {
         calls++;
         return { ok: false, error: "rejected" };
@@ -288,6 +291,59 @@ describe("createAutosaver", () => {
     saver.dispose();
     await Promise.resolve();
     assert.equal(calls, 1);
+    // It failed while the editor could still show it, so it is not lost.
+    assert.deepEqual(lost, []);
+  });
+
+  it("reports a flush on dispose that is rejected to onLost, without emitting", async () => {
+    const { saver, states, lost } = setup({ save: async () => ({ ok: false, error: "rejected" }) });
+    saver.schedule({ label: "x" });
+    const before = states.length;
+    saver.dispose();
+    await tick();
+    assert.deepEqual(lost, [["rejected", { label: "x" }]]);
+    assert.equal(states.length, before);
+  });
+
+  it("reports an in-flight save that throws after dispose to onLost", async () => {
+    const gate = deferred<SaveOutcome>();
+    const { saver, lost } = setup({ save: () => gate.promise });
+    saver.schedule({ label: "y" });
+    const done = saver.flush();
+    saver.dispose();
+    gate.reject(new TypeError("Failed to fetch"));
+    await done;
+    assert.deepEqual(lost, [[NETWORK_ERROR, { label: "y" }]]);
+  });
+
+  it("reports only the last of queued saves after dispose", async () => {
+    const gate = deferred<SaveOutcome>();
+    let n = 0;
+    const { saver, lost } = setup({ save: () => (++n === 1 ? gate.promise : Promise.resolve({ ok: false, error: "second" })) });
+    saver.schedule({ label: "one" });
+    const done = saver.flush();
+    saver.schedule({ label: "two" });
+    saver.dispose();
+    gate.resolve({ ok: false, error: "first" });
+    await done;
+    assert.deepEqual(lost, [["second", { label: "two" }]]);
+  });
+
+  it("does not call onLost for a save that succeeds after dispose", async () => {
+    const { saver, lost, saves } = setup({});
+    saver.schedule({ label: "x" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }]);
+    assert.deepEqual(lost, []);
+  });
+
+  it("works without onLost", async () => {
+    const { saver, saves } = setup({ noOnLost: true, save: async () => ({ ok: false, error: "rejected" }) });
+    saver.schedule({ label: "x" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }]);
   });
 
   it("stops emitting and clears timers after dispose", async () => {
@@ -301,12 +357,13 @@ describe("createAutosaver", () => {
   });
 
   it("QA-4: emits again after resume, as a StrictMode remount needs", async () => {
-    const { saver, states } = setup({ save: async () => ({ ok: false, error: "rejected" }) });
+    const { saver, states, lost } = setup({ save: async () => ({ ok: false, error: "rejected" }) });
     saver.dispose();
     saver.resume();
     saver.schedule({ label: "x" });
     await saver.flush();
     assert.deepEqual(states.at(-1), { status: "error", error: "rejected", fieldErrors: undefined });
+    assert.deepEqual(lost, []);
   });
 
   it("uses real timers by default", async () => {

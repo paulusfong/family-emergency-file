@@ -13,6 +13,8 @@ describe("EntryEditor", async () => {
   const { EntryEditor } = await import("./entry-editor");
   const { ENTRY_TYPE_DEFS } = await import("@/lib/entry-fields");
   const { NETWORK_ERROR } = await import("@/lib/autosave");
+  const { LostSaveNotice } = await import("./lost-save-notice");
+  const { dismissLostSave, getLostSave } = await import("@/lib/lost-save");
   type Save = Parameters<typeof EntryEditor>[0]["save"];
   type Input = Parameters<Save>[0];
 
@@ -56,8 +58,15 @@ describe("EntryEditor", async () => {
 
   afterEach(() => {
     cleanup();
+    dismissLostSave();
     window.history.replaceState(null, "", "/app/sections/S3/entries/new");
   });
+
+  const unload = () => {
+    const event = new window.Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
 
   it("renders metadata inputs only, with a numeric last-4 and no password field", () => {
     const { container } = mount({ save: async () => ({ ok: true, entryId: "x" }) });
@@ -222,11 +231,6 @@ describe("EntryEditor", async () => {
       return { ok: true, entryId: "e-3" };
     };
     mount({ save, entryId: "e-3", initialValues: { label: "Card" } });
-    const unload = () => {
-      const event = new window.Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
-      window.dispatchEvent(event);
-      return event.defaultPrevented;
-    };
     assert.equal(unload(), false);
     fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Main St" } });
     assert.equal(screen.getByRole("status").textContent, "Unsaved changes…");
@@ -242,6 +246,72 @@ describe("EntryEditor", async () => {
     await wait(20);
     assert.equal(screen.getByRole("status").textContent, "Not saved.");
     assert.equal(unload(), true);
+  });
+
+  it("asks before the tab closes for a new entry with typed content but no label yet", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-2" }));
+    mount({ save, strict: true });
+    assert.equal(unload(), false);
+    const institution = screen.getByLabelText("Institution");
+    fireEvent.change(institution, { target: { value: "Example Bank" } });
+    assert.equal(screen.getByRole("status").textContent, "Fill in “Account nickname” to start saving.");
+    assert.equal(unload(), true);
+    fireEvent.change(institution, { target: { value: "   " } });
+    assert.equal(unload(), false);
+    fireEvent.change(institution, { target: { value: "" } });
+    assert.equal(unload(), false);
+    await wait(20);
+    assert.deepEqual(calls, []);
+  });
+
+  describe("a save that fails after the editor unmounts", () => {
+    const notice = () => screen.queryByRole("alert")?.textContent ?? "";
+
+    it("shows a notice outside the editor with a link back to the entry", async () => {
+      const { calls, save } = recorder(() => ({
+        ok: false,
+        status: 400,
+        error: `Phone: ${"Enter a phone number"}`,
+        fieldErrors: { phone: "Enter a phone number" },
+      }));
+      render(React.createElement(LostSaveNotice));
+      assert.equal(notice(), "");
+      const view = mount({ type: "contact", save, entryId: "c-7", initialValues: { label: "Pat" } });
+      fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "4045550123" } });
+      view.unmount();
+      await wait(20);
+      assert.equal(calls.length, 1);
+      assert.equal(notice(), "Your last change to “Pat” wasn't saved. Phone: Enter a phone numberOpen it againDismiss");
+      const link = screen.getByRole("link", { name: "Open it again" });
+      assert.equal(link.getAttribute("href"), "/app/sections/S3/entries/c-7");
+      fireEvent.click(link);
+      assert.equal(notice(), "");
+      assert.equal(getLostSave() === null, true);
+    });
+
+    it("has no link for a new entry that was never created, and dismisses", async () => {
+      const { save } = recorder(() => Promise.reject(new TypeError("Failed to fetch")));
+      render(React.createElement(LostSaveNotice));
+      const view = mount({ save });
+      fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint" } });
+      view.unmount();
+      await wait(20);
+      assert.equal(notice(), `Your last change to “Joint” wasn't saved. ${NETWORK_ERROR}Dismiss`);
+      assert.equal(screen.queryAllByRole("link").length, 0);
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      assert.equal(notice(), "");
+    });
+
+    it("shows nothing when the flush on unmount succeeds", async () => {
+      const { calls, save } = recorder(() => ({ ok: true, entryId: "c-8" }));
+      render(React.createElement(LostSaveNotice));
+      const view = mount({ type: "contact", save, entryId: "c-8", initialValues: { label: "Pat" } });
+      fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(404) 555-0123" } });
+      view.unmount();
+      await wait(20);
+      assert.equal(calls.length, 1);
+      assert.equal(notice(), "");
+    });
   });
 
   describe("QA-4: autosave status under React StrictMode", () => {
