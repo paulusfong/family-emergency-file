@@ -720,9 +720,10 @@ describe("findFullNumber: digits before a phone (heads)", () => {
     assert.equal(findFullNumber(`${head} then ${PHONE}`), null);
   });
 
-  it("does not count a 5-digit head on its own (a ZIP)", () => {
+  it("does not count a 5-digit head on its own (a ZIP) in text with letters", () => {
     assert.equal(findFullNumber(`Atlanta GA ${luhnHead(NAT, 5)} ${PHONE}`), null);
-    assert.equal(findFullNumber(`${luhnHead(NAT, 5)} ${PHONE}`), null);
+    assert.equal(findFullNumber(`ZIP ${luhnHead(NAT, 5)} ${PHONE}`), null);
+    assert.equal(findFullNumber(`${luhnHead(NAT, 5)}; ${PHONE}`), null);
   });
 
   it("joins a head even when a marker comes before a short tail", () => {
@@ -745,7 +746,8 @@ describe("findFullNumber: digits on both sides of a phone", () => {
     assert.equal(findFullNumber(`12 ${PHONE} ${tail}`), "full_number");
     assert.equal(findFullNumber(`12 ${PHONE} ${spoil(tail)}`), null);
     const short = luhnTail(`12${NAT}`, 3);
-    assert.equal(findFullNumber(`12 ${PHONE} ${short}`), null);
+    assert.equal(findFullNumber(`Unit 12 ${PHONE} ${short}`), null);
+    assert.equal(findFullNumber(`12, ${PHONE}, ${short}`), null);
   });
 
   it("does not join a head to a short tail after an extension marker", () => {
@@ -761,6 +763,101 @@ describe("findFullNumber: digits on both sides of a phone", () => {
     const tail = luhnTail(`5510${second}`, 2);
     assert.equal(findFullNumber(`${PHONE} / (312) 867-5309 ${tail}`), null);
     assert.equal(findFullNumber(`5510 / (312) 867-5309 ${tail}`), "full_number");
+  });
+});
+
+describe("findFullNumber: digits grouped tightly with a phone, in text with no letters", () => {
+  // QA rule 2: a layout of digits and separators only that the whole-run
+  // check blocked before phones were set aside must still be blocked.
+  it("joins a group of any size after the phone across one space, dash, or dot", () => {
+    const tail = luhnTail(NAT, 3);
+    for (const phone of [PHONE, "404-683-5510", "404.683.5510", "404 683 5510"]) {
+      for (const sep of [" ", "-", "."]) {
+        assert.equal(findFullNumber(phone + sep + tail), "full_number", JSON.stringify(phone + sep));
+        assert.equal(findFullNumber(phone + sep + spoil(tail)), null, JSON.stringify(phone + sep));
+      }
+    }
+  });
+
+  it("joins a group of any size before the phone across one space, dash, or dot", () => {
+    for (const size of [3, 5]) {
+      const head = luhnHead(NAT, size);
+      for (const sep of [" ", "-", "."]) {
+        assert.equal(findFullNumber(head + sep + PHONE), "full_number", `${size} ${JSON.stringify(sep)}`);
+        assert.equal(findFullNumber(spoil(head) + sep + PHONE), null, `${size} ${JSON.stringify(sep)}`);
+      }
+    }
+  });
+
+  it("joins a group on each side at once", () => {
+    // 41 215 536-1819 125 style: 2 + 10 + 3 = 15 digits.
+    const tail = luhnTail(`41${NAT}`, 3);
+    assert.equal(findFullNumber(`41 ${PHONE} ${tail}`), "full_number");
+    assert.equal(findFullNumber(`41 ${PHONE} ${spoil(tail)}`), null);
+    assert.equal(passesLuhn(NAT + tail), false);
+    assert.equal(passesLuhn(`41${NAT}`), false);
+  });
+
+  it("does not join a short group across other separators, or when the text has a letter", () => {
+    const tail = luhnTail(NAT, 3);
+    for (const gap of [" - ", ", ", "; ", " / ", " | ", "\n", "  ", " #", " · "]) {
+      assert.equal(findFullNumber(PHONE + gap + tail), null, JSON.stringify(gap));
+    }
+    assert.equal(findFullNumber(`${luhnHead(NAT, 5)} - ${PHONE}`), null);
+    assert.equal(findFullNumber(`Call ${PHONE} ${tail}`), null);
+    assert.equal(findFullNumber(`${PHONE} ${tail} a`), null);
+    assert.equal(findFullNumber(`${luhnHead(NAT, 5)} ${PHONE} (cell)`), null);
+  });
+
+  it("reads the whole stretch, as the whole-run check does", () => {
+    const tail = luhnTail(`${NAT}12`, 2);
+    assert.equal(findFullNumber(`${PHONE} 12 ${tail}`), "full_number");
+    assert.equal(findFullNumber(`${PHONE} 12 ${spoil(tail)}`), null);
+    // The card is inside the stretch, but the stretch is not a card.
+    const card = luhnTail(NAT, 3);
+    assert.equal(findFullNumber(`${PHONE} ${card} 7`), null);
+    // A phone found inside another phone's digits (libphonenumber reads 683-5510-008) is part of the stretch.
+    assert.equal(findFullNumber(`${PHONE}-${card}`), "full_number");
+  });
+
+  it("joins no group before a phone written with +", () => {
+    const head = luhnHead(`1${NAT}`, 5);
+    assert.equal(findFullNumber(`${head} 1 ${PHONE}`), "full_number");
+    assert.equal(findFullNumber(`${head} +1 ${PHONE}`), null);
+    const tail = luhnTail(`1${NAT}`, 3);
+    assert.equal(findFullNumber(`+1 ${PHONE} ${tail}`), "full_number");
+  });
+
+  it("reads the digits as typed, without a leading 1 only when no group comes before", () => {
+    const tail = luhnTail(NAT, 3);
+    assert.equal(passesLuhn(`1${NAT}${tail}`), false);
+    assert.equal(findFullNumber(`1-404-683-5510 ${tail}`), "full_number");
+    const head = luhnHead(NAT + tail, 2);
+    assert.equal(passesLuhn(`${head}1${NAT}${tail}`), false);
+    assert.equal(findFullNumber(`${head} 1-404-683-5510 ${tail}`), null);
+    assert.equal(findFullNumber(`${head}1 ${PHONE} ${tail}`), null);
+    // Only a leading 1 is dropped, not the first 1 inside the number.
+    const inner = luhnTail("404683550", 4);
+    assert.equal(passesLuhn(NAT + inner), false);
+    assert.equal(findFullNumber(`${PHONE} ${inner}`), null);
+  });
+
+  it("does not join a group inside another set-aside token", () => {
+    const head = luhnHead(NAT, 4);
+    assert.equal(findFullNumber(`${head} ${PHONE}`), "full_number");
+    assert.equal(findFullNumber(`30303-${head} ${PHONE}`), null);
+    const tail = luhnTail(NAT, 3);
+    assert.equal(findFullNumber(`${PHONE} ${tail}.25`), null);
+    assert.equal(findFullNumber(`${PHONE} (312) 867-5309`), null);
+  });
+
+  it("still blocks the standard printed layouts next to a phone", () => {
+    for (const card of ["3782 822463 10005", "4222 2222 22222", "4111 1111 1111 1111", "4111-1111-1111-1111-003"]) {
+      assert.equal(passesLuhn(card.replace(/[^0-9]/g, "")), true, card);
+      for (const text of [card, `${card} ${PHONE}`, `${PHONE} ${card}`, `Card ${card}, call ${PHONE}`]) {
+        assert.equal(findFullNumber(text), "full_number", text);
+      }
+    }
   });
 });
 

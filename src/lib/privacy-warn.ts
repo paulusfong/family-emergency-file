@@ -197,6 +197,11 @@ export function isFormattedPhone(value: string) {
  * tail followed by a word with no marker before it is a street number
  * ("(404) 683-5510, 12045 Main St"), not an extension. If any of these is a 13-19 digit Luhn-valid number,
  * the text is blocked.
+ *
+ * Text with no letters at all has nothing that says a group is a ZIP, a
+ * street number, or an extension, so there the whole-run card check still
+ * reads a phone together with the groups grouped with it the way card digits
+ * are grouped (see tightRunHidesCard).
  */
 const EXT_WORDS = "x|ext|extn|extensi[oó]n|ex|no|nr|num|number|anexo|ramal|int|interno|poste|durchwahl|доб";
 /* Both match at index 0, possibly empty, so they need no anchor. */
@@ -206,6 +211,10 @@ const LEADING_GROUP_RE = /[0-9]*/;
 const STREET_NAME_RE = /^\s+\p{L}{2}/u;
 const EXT_MARK_RE = /[\p{L}#]/u;
 const TRAILING_GROUP_RE = /([0-9]+)[^\p{L}0-9]{1,3}$/u;
+/** Digit groups with exactly one space, "-", or "." between them: how card digits are grouped. */
+const TIGHT_RUN_RE = /[0-9]+(?:[ .-][0-9]+)*/g;
+const DIGIT_CHAR_RE = /[0-9]/;
+const LETTER_RE = /\p{L}/u;
 const MIN_TAIL = 5;
 const MIN_ADDED_DIGITS = 6;
 
@@ -290,6 +299,33 @@ function joinCounts(head: string, tail: string, marked: boolean) {
 }
 
 /**
+ * For text with no letters: the whole-run card check (13-19 digits, Luhn,
+ * also without a leading "1" written on its own), run on stretches of phones
+ * (read as digits, whatever their inner formatting) and digit groups with a
+ * single space, "-", or "." between them: "(525) 965-8909 210",
+ * "17777 (402) 664-6221", "41 215 536-1819 125". Any other separator ends a
+ * stretch ("30301; (404) 683-5510"), as do the other set-aside tokens and a
+ * "+" starting a phone (a card never has one). A stretch with no phone in it
+ * is a 9+ digit run already.
+ */
+function tightRunHidesCard(text: string, phones: FoundPhone[], aside: boolean[]) {
+  const inPhone: boolean[] = new Array(text.length).fill(false);
+  for (const { startsAt, endsAt } of phones) inPhone.fill(true, startsAt, endsAt);
+  let glued = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (!inPhone[i]) glued += aside[i] ? "Z" : ch;
+    else if (DIGIT_CHAR_RE.test(ch)) glued += ch;
+    else if (DIGIT_CHAR_RE.test(glued.at(-1) ?? "") && inPhone[i - 1]) glued += "-";
+    else if (ch === "+") glued += "Z";
+  }
+  return [...glued.matchAll(TIGHT_RUN_RE)].some(([run]) => {
+    const digits = run.replace(NON_DIGIT_RE, "");
+    return isLuhnCard(digits) || (COUNTRY_CODE_ONE_RE.test(run) && isLuhnCard(digits.slice(1)));
+  });
+}
+
+/**
  * Overwrites each phone set aside with letters of the same length (so
  * offsets still line up), and reports whether any of them hides a card.
  */
@@ -308,6 +344,7 @@ function setPhonesAside(text: string) {
     );
     masked = masked.slice(0, startsAt) + "Z".repeat(phone.length) + masked.slice(endsAt);
   }
+  hidesCard ||= !LETTER_RE.test(text) && tightRunHidesCard(text, phones, aside);
   return { masked, hidesCard };
 }
 
