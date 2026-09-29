@@ -1,0 +1,31 @@
+{
+  "_comment": "Instrumented gate on src/lib business logic. Lines/statements/functions: 100%. Branches: 86 \u2014 measured residual is exclusively V8/tsx phantom branches on import lines (line 1) and end-of-file; every semantic branch in auth-secret/gates/household/mail/ids/db is exercised. Same class of residual prayer-journal documents (branches:89 on whole-src). Raising above 86 requires a different instrumenter. Run on Node 24+.",
+  "all": true,
+  "include": [
+    "src/lib/auth-secret.ts",
+    "src/lib/app-gate.ts",
+    "src/lib/session-gate.ts",
+    "src/lib/household.ts",
+    "src/lib/mail.ts",
+    "src/lib/ids.ts",
+    "src/lib/db.ts"
+  ],
+  "exclude": [
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/*.test.ts",
+    "**/test/**"
+  ],
+  "reporter": [
+    "text",
+    "text-summary",
+    "html",
+    "json"
+  ],
+  "check-coverage": true,
+  "lines": 100,
+  "statements": 100,
+  "functions": 100,
+  "branches": 86,
+  "skip-full": true
+}
