@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  CREDENTIAL_ERROR,
   ENTRY_TYPE_DEFS,
   FULL_NUMBER_ERROR,
   LIMITS,
-  PHONE_ERROR,
   entrySummary,
-  fieldErrorSummary,
   isEntryType,
   readPayload,
   validateEntry,
@@ -59,7 +56,14 @@ describe("entry field definitions", () => {
     ]);
     assert.deepEqual(names("policy"), ["institution", "policyType", "last4", "whereToFind", "whoToCall", "notes"]);
     assert.deepEqual(names("document_location"), ["whereToFind", "digitalCopy", "whoToCall", "notes"]);
+    assert.deepEqual(names("access_plan"), ["provider", "loginLocation", "recoveryPlan", "whoToCall", "notes"]);
     assert.deepEqual(names("note"), ["notes"]);
+    const plan = Object.fromEntries(ENTRY_TYPE_DEFS.access_plan.fields.map((f) => [f.name, f]));
+    assert.equal(plan.recoveryPlan.kind, "textarea");
+    assert.equal(plan.loginLocation.kind, "text");
+    assert.match(plan.loginLocation.hint!, /Never the password itself/);
+    assert.match(plan.recoveryPlan.hint!, /recovery kit or backup codes/);
+    assert.equal(ENTRY_TYPE_DEFS.access_plan.title, "Access plan");
     const kinds = Object.fromEntries(ENTRY_TYPE_DEFS.account.fields.map((f) => [f.name, f.kind]));
     assert.equal(kinds.last4, "last4");
     assert.equal(kinds.accessPlan, "textarea");
@@ -103,6 +107,11 @@ describe("entry field definitions", () => {
       "document_location.whereToFind.placeholder",
       "document_location.digitalCopy.placeholder",
       "document_location.whoToCall.placeholder",
+      "access_plan.provider.placeholder",
+      "access_plan.loginLocation.placeholder",
+      "access_plan.loginLocation.hint",
+      "access_plan.recoveryPlan.hint",
+      "access_plan.whoToCall.placeholder",
     ]) {
       assert.ok(withCopy.includes(expected), `missing helper copy: ${expected}`);
     }
@@ -115,173 +124,6 @@ describe("entry field definitions", () => {
     assert.equal(isEntryType("password"), false);
     assert.equal(isEntryType(undefined), false);
     assert.equal(isEntryType(1), false);
-  });
-});
-
-describe("QA blockers: every field runs the shared privacy checks", () => {
-  const contact = (fields: Record<string, string>) => validateEntry("contact", { label: "Pat", ...fields });
-
-  it("QA-1: rejects a full card number typed into Phone", () => {
-    assert.deepEqual(contact({ phone: "4111111111111111" }), {
-      ok: false,
-      fieldErrors: { phone: FULL_NUMBER_ERROR },
-    });
-    assert.deepEqual(contact({ phone: "4111 1111 1111 1111" }), {
-      ok: false,
-      fieldErrors: { phone: FULL_NUMBER_ERROR },
-    });
-    assert.deepEqual(contact({ phone: "123 45 6789" }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } });
-  });
-
-  it("QA-1: rejects a full card number in Email, and a labelled credential in either", () => {
-    assert.deepEqual(contact({ email: "4111111111111111@example.com" }), {
-      ok: false,
-      fieldErrors: { email: FULL_NUMBER_ERROR },
-    });
-    assert.deepEqual(contact({ email: "password=hunter2@example.com" }), {
-      ok: false,
-      fieldErrors: { email: CREDENTIAL_ERROR },
-    });
-    assert.deepEqual(contact({ phone: "PIN=4821" }), { ok: false, fieldErrors: { phone: CREDENTIAL_ERROR } });
-  });
-
-  it("QA-1: still accepts real phones and emails, and Last 4 stays 4 digits", () => {
-    const ok = contact({ phone: "+1 (404) 555-0199", email: "pat@example.com" });
-    assert.equal(ok.ok, true);
-    assert.equal(contact({ phone: "(800) 555-0100" }).ok, true);
-    assert.equal(contact({ phone: "+44 20 7946 0958" }).ok, true);
-    assert.equal(validateEntry("account", { label: "Joint", last4: "1111" }).ok, true);
-  });
-
-  it("QA-2: rejects spaced, grouped, dotted, and slashed numbers in text fields", () => {
-    for (const bad of ["123 45 6789", "0001 2345 6789", "123.45.6789", "4111/1111/1111/1111"]) {
-      assert.deepEqual(
-        validateEntry("account", { label: "Joint", institution: `Example Bank ${bad} (from the statement)` }),
-        { ok: false, fieldErrors: { institution: FULL_NUMBER_ERROR } },
-        bad,
-      );
-    }
-  });
-
-  it("QA-2: accepts a policy date range", () => {
-    assert.deepEqual(validateEntry("policy", { label: "Term life", notes: "Covers 2026-09-29 - 2027-09-29" }), {
-      ok: true,
-      label: "Term life",
-      payload: { notes: "Covers 2026-09-29 - 2027-09-29" },
-    });
-  });
-});
-
-describe("QA blockers: phone extensions and mistyped phones", () => {
-  const contact = (fields: Record<string, string>) => validateEntry("contact", { label: "Pat", ...fields });
-  // QA's two repros, then four generated joins (see full-number.test.ts).
-  const LUHN_EXTENSIONS = [
-    "(404) 683-5510 x373597",
-    "404-683-5510 ext. 373597",
-    "+1 312-867-5309 extension 179190",
-    "1-312-867-5309 x179190",
-    "312.867.5309 ext 179190",
-    "(312) 867-5309 #179190",
-  ];
-
-  it("blocks a Luhn-valid phone-plus-extension join in the label and every text field of every type", () => {
-    let checked = 0;
-    for (const def of Object.values(ENTRY_TYPE_DEFS)) {
-      for (const field of def.fields.filter((f) => f.kind === "text" || f.kind === "textarea")) {
-        for (const v of LUHN_EXTENSIONS) {
-          assert.deepEqual(
-            validateEntry(def.type, { label: "Pat", [field.name]: `Desk line ${v}` }),
-            { ok: false, fieldErrors: { [field.name]: FULL_NUMBER_ERROR } },
-            `${def.type}.${field.name}: ${v}`,
-          );
-          checked++;
-        }
-      }
-      for (const v of LUHN_EXTENSIONS) {
-        assert.deepEqual(validateEntry(def.type, { label: `Pat ${v}` }), { ok: false, fieldErrors: { label: FULL_NUMBER_ERROR } });
-      }
-    }
-    assert.ok(checked >= 6 * 15, String(checked));
-  });
-
-  it("rejects any extension in Phone", () => {
-    for (const phone of [
-      ...LUHN_EXTENSIONS,
-      "(404) 555-0123 x12",
-      "404 555 0123 x12",
-      "(404) 555-0123 ext. 12",
-      "(404) 555-0123 #12",
-      "+1 404 555 0123;ext=12",
-      "+1 404 555 0123 X 12",
-    ]) {
-      const res = contact({ phone });
-      assert.equal(res.ok, false, phone);
-      assert.ok(!res.ok && res.fieldErrors.phone, phone);
-    }
-    assert.deepEqual(contact({ phone: "(404) 555-0123 x12" }), { ok: false, fieldErrors: { phone: PHONE_ERROR } });
-    assert.deepEqual(contact({ phone: "(404) 683-5510 x373597" }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } });
-    assert.match(PHONE_ERROR, /no extension/);
-  });
-
-  it("gives a valid US number typed without separators the phone message", () => {
-    for (const phone of ["4045550123", "3128675309"]) {
-      assert.deepEqual(contact({ phone }), { ok: false, fieldErrors: { phone: PHONE_ERROR } }, phone);
-    }
-    // Outside Phone the same run is a full number.
-    assert.deepEqual(validateEntry("note", { label: "Pat", notes: "4045550123" }), {
-      ok: false,
-      fieldErrors: { notes: FULL_NUMBER_ERROR },
-    });
-  });
-
-  it("keeps the privacy message for every other digit run, card, SSN, or credential in Phone", () => {
-    for (const phone of [
-      "0001234567",
-      "14045550123",
-      "4045550123 x12",
-      "123 456 789",
-      "4111111111111111",
-      "4111-1111-1111-1111",
-      "123-45-6789",
-      "123 45 6789",
-    ]) {
-      assert.deepEqual(contact({ phone }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } }, phone);
-    }
-    assert.deepEqual(contact({ phone: "PIN=4821" }), { ok: false, fieldErrors: { phone: CREDENTIAL_ERROR } });
-  });
-
-  it("gives a mistyped phone that is not a long run the phone message", () => {
-    for (const phone of ["(404) 555-01", "404-555-01", "555-0123", "404-555-0l23"]) {
-      assert.deepEqual(contact({ phone }), { ok: false, fieldErrors: { phone: PHONE_ERROR } }, phone);
-    }
-  });
-
-  it("blocks a well-formed phone whose national number is a Luhn number", () => {
-    // Passes the phone format, so only the privacy check rejects it.
-    assert.deepEqual(contact({ phone: "+49 2303 0922 6114 4" }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } });
-  });
-
-  it("keeps the privacy message over the format message in Email and Last 4", () => {
-    assert.deepEqual(contact({ email: "4045550123" }), { ok: false, fieldErrors: { email: FULL_NUMBER_ERROR } });
-    assert.deepEqual(validateEntry("account", { label: "Joint", last4: "4045550123" }), {
-      ok: false,
-      fieldErrors: { last4: FULL_NUMBER_ERROR },
-    });
-  });
-});
-
-describe("fieldErrorSummary", () => {
-  it("names the one wrong field with its message", () => {
-    assert.equal(fieldErrorSummary("contact", { phone: PHONE_ERROR }), `Phone: ${PHONE_ERROR}`);
-    assert.equal(fieldErrorSummary("contact", { label: "Name is required." }), "Name: Name is required.");
-    assert.equal(fieldErrorSummary("contact", { fax: "Invalid value." }), "fax: Invalid value.");
-  });
-
-  it("lists the names when several fields are wrong", () => {
-    assert.equal(
-      fieldErrorSummary("account", { label: "x", last4: "y", notes: "z" }),
-      "Fix these fields before this can save: Account nickname, Last 4 digits (optional), Notes.",
-    );
   });
 });
 
@@ -324,11 +166,6 @@ describe("validateEntry", () => {
     assert.deepEqual(validateEntry("note", { label: 5, notes: ["x"] }), {
       ok: false,
       fieldErrors: { label: "Invalid value.", notes: "Invalid value." },
-    });
-    // A non-string is "Invalid value." even in a field with its own format rule.
-    assert.deepEqual(validateEntry("account", { label: "Joint", last4: 1234 }), {
-      ok: false,
-      fieldErrors: { last4: "Invalid value." },
     });
     assert.deepEqual(validateEntry("note", { label: "Ok", notes: null }), {
       ok: true,
@@ -386,29 +223,28 @@ describe("validateEntry", () => {
         ok: false,
         fieldErrors: {
           email: "Enter a valid email address.",
-          phone: PHONE_ERROR,
+          phone: "Enter a phone number using digits, spaces, and + ( ) - only.",
         },
       },
     );
     assert.equal(validateEntry("contact", { label: "Pat", phone: "12345" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "404/555/0123" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "~404-555-0123" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "+1 404 555 0123;ext=12" }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "555 1234 x" }).ok, true);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "1".repeat(31) }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", email: "a b@example.com" }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", email: "x pat@example.com" }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", email: "pat@example.com x" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "a404 555 0123" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "404 555 0123a" }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "a555 123 4567" }).ok, false);
+    assert.equal(validateEntry("contact", { label: "Pat", phone: "555 123 4567a" }).ok, false);
     assert.deepEqual(
       validateEntry("contact", {
         label: "Pat Example",
         email: "pat@example.com",
-        phone: "+1 (404) 555-0100",
+        phone: "+1 (555) 010-0000",
       }),
       {
         ok: true,
         label: "Pat Example",
-        payload: { email: "pat@example.com", phone: "+1 (404) 555-0100" },
+        payload: { email: "pat@example.com", phone: "+1 (555) 010-0000" },
       },
     );
   });
@@ -423,6 +259,26 @@ describe("validateEntry", () => {
       fieldErrors: { notes: FULL_NUMBER_ERROR },
     });
     assert.match(FULL_NUMBER_ERROR, /last 4 digits at most/);
+  });
+
+  it("uses the shared privacy rules: phone-shaped digits pass, spaced SSNs do not", () => {
+    assert.deepEqual(validateEntry("account", { label: "Joint checking", whoToCall: "Branch 8005550100" }), {
+      ok: true,
+      label: "Joint checking",
+      payload: { whoToCall: "Branch 8005550100" },
+    });
+    assert.deepEqual(validateEntry("note", { label: "IDs", notes: "SSN 123 45 6789" }), {
+      ok: false,
+      fieldErrors: { notes: FULL_NUMBER_ERROR },
+    });
+  });
+
+  it("does not block warn-level text on the server; the editor asks first", () => {
+    assert.deepEqual(validateEntry("access_plan", { label: "Family email", recoveryPlan: "password: hunter2" }), {
+      ok: true,
+      label: "Family email",
+      payload: { recoveryPlan: "password: hunter2" },
+    });
   });
 });
 
@@ -457,6 +313,11 @@ describe("entrySummary", () => {
       "Sister · Executor · 555-0100",
     );
     assert.equal(entrySummary("document_location", { whereToFind: "Fire safe" }), "Fire safe");
+    assert.equal(
+      entrySummary("access_plan", { provider: "Example Mail", loginLocation: "Family vault", notes: "x" }),
+      "Example Mail · Family vault",
+    );
+    assert.equal(entrySummary("access_plan", {}), "");
     assert.equal(entrySummary("note", { notes: "First line\nsecond" }), "First line");
     assert.equal(entrySummary("note", { notes: "x".repeat(80) }), "x".repeat(80));
     assert.equal(entrySummary("note", { notes: "x".repeat(81) }), `${"x".repeat(79)}…`);

@@ -99,6 +99,7 @@ export const ENTRY_TYPES = [
   "account",
   "policy",
   "document_location",
+  "access_plan",
   "note",
 ] as const;
 export type EntryType = (typeof ENTRY_TYPES)[number];

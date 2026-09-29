@@ -112,7 +112,7 @@ export const SECTION_PRIMARY_TYPE: Record<SectionKey, EntryType> = {
   S7: "account",
   S8: "account",
   S9: "document_location",
-  S10: "note",
+  S10: "access_plan",
   S11: "document_location",
   S12: "note",
 };
