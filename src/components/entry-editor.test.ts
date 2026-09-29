@@ -27,17 +27,19 @@ describe("EntryEditor", async () => {
     type?: keyof typeof ENTRY_TYPE_DEFS;
     entryId?: string | null;
     initialValues?: Record<string, string>;
+    strict?: boolean;
   }) {
-    return render(
-      React.createElement(EntryEditor, {
-        sectionKey: "S3",
-        def: ENTRY_TYPE_DEFS[opts.type ?? "account"],
-        entryId: opts.entryId ?? null,
-        initialValues: opts.initialValues ?? {},
-        save: opts.save,
-        delayMs: 5,
-      }),
-    );
+    const editor = React.createElement(EntryEditor, {
+      sectionKey: "S3",
+      def: ENTRY_TYPE_DEFS[opts.type ?? "account"],
+      entryId: opts.entryId ?? null,
+      initialValues: opts.initialValues ?? {},
+      save: opts.save,
+      delayMs: 5,
+    });
+    // next dev (and QA) run React in StrictMode, which mounts, unmounts, and
+    // remounts every effect once.
+    return render(opts.strict ? React.createElement(React.StrictMode, null, editor) : editor);
   }
 
   function recorder(result: (i: Input, n: number) => Awaited<ReturnType<Save>> | Promise<never>) {
@@ -256,6 +258,28 @@ describe("EntryEditor", async () => {
     assert.deepEqual(calls[0].values, { label: "Card", notes: "Card ends 1111" });
   });
 
+  it("QA-1: blocks a card number typed into Phone or Email, with no way to confirm it", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "c-1" }));
+    mount({ save, type: "contact" });
+    fireEvent.change(screen.getByLabelText("Name (required)"), { target: { value: "Pat" } });
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "4111111111111111" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "4111111111111111@example.com" } });
+    assert.equal(warningText("phone"), FULL_NUMBER_ERROR);
+    assert.equal(warningText("email"), FULL_NUMBER_ERROR);
+    assert.equal(confirmButton() === null, true);
+    fireEvent.blur(screen.getByLabelText("Phone"));
+    await wait(20);
+    assert.equal(calls.length, 0);
+    assert.equal(statusText(), "Review the flagged field before this saves.");
+
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "+1 (555) 010-0199" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "pat@example.com" } });
+    assert.equal(warningText("phone"), null);
+    assert.equal(warningText("email"), null);
+    await wait(20);
+    assert.deepEqual(calls[0].values, { label: "Pat", phone: "+1 (555) 010-0199", email: "pat@example.com" });
+  });
+
   it("flags the label field too, and keeps the fill-in prompt when the label is empty", async () => {
     const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
     mount({ save });
@@ -328,5 +352,101 @@ describe("EntryEditor", async () => {
       [{ label: "Family email" }],
     );
     assert.equal(statusText(), "Review the flagged field before this saves.");
+  });
+
+  describe("QA-4: autosave status under React StrictMode", () => {
+    const SAVED = "All changes saved.";
+    const status = () => screen.getByRole("status").textContent;
+    const retryButtons = () => screen.queryAllByRole("button", { name: "Retry" }).length;
+    const alertText = () => screen.queryByRole("alert")?.textContent ?? "";
+    const setOnline = (online: boolean) => {
+      Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => online });
+      act(() => {
+        window.dispatchEvent(new window.Event(online ? "online" : "offline"));
+      });
+    };
+    afterEach(() => setOnline(true));
+
+    it("never shows saved after a rejected save, and shows the toast with Retry", async () => {
+      const { calls, save } = recorder(() => ({
+        ok: false,
+        status: 400,
+        error: "Some fields need a fix before this can save.",
+        fieldErrors: { institution: "Keep this under 200 characters." },
+      }));
+      mount({ save, strict: true, entryId: "e-1", initialValues: { label: "Joint" } });
+      assert.equal(status(), SAVED);
+      // A value the editor allows, rejected by the (mocked) server.
+      fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Example Bank, Main St" } });
+      await wait(20);
+      assert.equal(calls.length, 1);
+      assert.equal(status(), "Not saved.");
+      assert.match(alertText(), /Some fields need a fix/);
+      assert.equal(retryButtons(), 1);
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      await wait(0);
+      assert.equal(calls.length, 2);
+      assert.equal(status(), "Not saved.");
+      assert.equal(retryButtons(), 1);
+    });
+
+    it("never shows saved after an offline save, and recovers on Retry", async () => {
+      let offline = true;
+      const { calls, save } = recorder((i) => {
+        if (offline) return Promise.reject(new TypeError("Failed to fetch"));
+        return { ok: true, entryId: i.entryId ?? "e-1" };
+      });
+      mount({ save, strict: true, entryId: "e-1", initialValues: { label: "Joint" } });
+      fireEvent.change(screen.getByLabelText("Ownership"), { target: { value: "Joint with Pat" } });
+      await wait(20);
+      assert.equal(status(), "Not saved.");
+      assert.match(alertText(), new RegExp(NETWORK_ERROR.slice(0, 30)));
+      assert.equal(retryButtons(), 1);
+      offline = false;
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      await wait(0);
+      assert.equal(status(), SAVED);
+      assert.equal(retryButtons(), 0);
+      assert.equal(calls.length, 2);
+    });
+
+    it("shows the offline toast with Retry while the browser is offline, then saves on reconnect", async () => {
+      const { calls, save } = recorder((i) => ({ ok: true, entryId: i.entryId ?? "e-1" }));
+      mount({ save, strict: true, entryId: "e-1", initialValues: { label: "Joint" } });
+      assert.equal(status(), SAVED);
+      setOnline(false);
+      assert.notEqual(status(), SAVED);
+      assert.match(status()!, /offline/i);
+      assert.match(alertText(), /offline/i);
+      assert.equal(retryButtons(), 1);
+      fireEvent.change(screen.getByLabelText("Ownership"), { target: { value: "Joint with Pat" } });
+      assert.notEqual(status(), SAVED);
+      assert.equal(retryButtons(), 1);
+      setOnline(true);
+      await wait(20);
+      assert.equal(status(), SAVED);
+      assert.equal(retryButtons(), 0);
+      assert.deepEqual(
+        calls.map((c) => (c.values as Record<string, string>).ownership),
+        ["Joint with Pat"],
+      );
+    });
+
+    it("starts offline when the browser already is, and saves once per edit", async () => {
+      Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => false });
+      const { calls, save } = recorder((i) => ({ ok: true, entryId: i.entryId ?? "e-9" }));
+      mount({ save, strict: true });
+      assert.match(status()!, /offline/i);
+      assert.equal(retryButtons(), 1);
+      setOnline(true);
+      await wait(0);
+      assert.equal(status(), "Fill in “Account nickname” to start saving.");
+      assert.equal(retryButtons(), 0);
+      fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint" } });
+      await wait(20);
+      assert.equal(status(), SAVED);
+      assert.equal(calls.length, 1);
+      assert.equal(window.location.pathname, "/app/sections/S3/entries/e-9");
+    });
   });
 });

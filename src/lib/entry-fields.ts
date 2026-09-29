@@ -163,16 +163,23 @@ function limitFor(kind: FieldKind) {
   return kind === "textarea" ? LIMITS.textarea : LIMITS.text;
 }
 
-function checkField(def: FieldDef, value: string): string | null {
-  if (value.length > limitFor(def.kind)) return `Keep this under ${limitFor(def.kind)} characters.`;
-  if (def.kind === "last4") {
-    return /^\d{4}$/.test(value) ? null : "Enter exactly 4 digits, or leave it blank.";
-  }
-  if (def.kind === "email") return EMAIL_RE.test(value) ? null : "Enter a valid email address.";
-  if (def.kind === "phone") {
+function formatError(kind: FieldKind, value: string): string | null {
+  if (kind === "last4") return /^\d{4}$/.test(value) ? null : "Enter exactly 4 digits, or leave it blank.";
+  if (kind === "email") return EMAIL_RE.test(value) ? null : "Enter a valid email address.";
+  if (kind === "phone") {
     return PHONE_RE.test(value) ? null : "Enter a phone number using digits, spaces, and + ( ) - only.";
   }
-  return blockedError(value);
+  return null;
+}
+
+/**
+ * Every field, whatever its kind, goes through the shared block-level
+ * privacy checks: a card number typed into Phone or Email is still a card
+ * number. The privacy message wins over a format message.
+ */
+function checkField(def: FieldDef, value: string): string | null {
+  if (value.length > limitFor(def.kind)) return `Keep this under ${limitFor(def.kind)} characters.`;
+  return blockedError(value) ?? formatError(def.kind, value);
 }
 
 export type ValidatedEntry =
@@ -182,7 +189,8 @@ export type ValidatedEntry =
 /**
  * Server-side validation. Accepts only the known fields for the type, trims
  * them, drops blanks, and rejects block-level privacy findings (full numbers
- * and labelled credentials). Warn-level findings are allowed.
+ * and labelled credentials) in every field, phone and email included.
+ * Warn-level findings are allowed.
  */
 export function validateEntry(type: EntryType, raw: unknown): ValidatedEntry {
   const input = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;

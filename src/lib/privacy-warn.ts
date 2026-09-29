@@ -24,29 +24,45 @@ export const CREDENTIAL_ERROR =
 export const SECRET_WARNING =
   "This looks like a password, PIN, or other secret. Keep it in your password manager and write down where it lives instead.";
 
-const SSN_RE = /(?<!\d)\d{3}[- ]\d{2}[- ]\d{4}(?!\d)/;
-const DIGIT_RUN_RE = /\d+(?:[ -]\d+)*/g;
+/** Separators people put between digit groups: dash, dot, space, slash. */
+const SEP = "[-. /]";
+const SSN_RE = new RegExp(`(?<!\\d)\\d{3}${SEP}\\d{2}${SEP}\\d{4}(?!\\d)`);
+const DIGIT_RUN_RE = new RegExp(`\\d+(?:${SEP}\\d+)*`, "g");
+const SEP_RE = new RegExp(SEP);
 const LONG_RUN_RE = /\d{9,}/g;
+const YEAR_RE = /^(?:19|20)\d\d$/;
+/** E.164 allows up to 15 digits after the "+". */
+const MAX_INTL_DIGITS = 15;
 
 /** 10 digits, or 11 starting with 1, reads as a phone number, not an account. */
 function isPhoneShaped(run: string) {
   return run.length === 10 || (run.length === 11 && run.startsWith("1"));
 }
 
+/** "+44 7700 900123" or "+4915123456789": an international phone number. */
+function isInternationalPhone(text: string, index: number, digitCount: number) {
+  return text[index - 1] === "+" && digitCount <= MAX_INTL_DIGITS;
+}
+
 /**
- * 13 to 19 digits written as groups joined by single spaces or dashes, where
- * every group but the last has at least 4 digits (4-4-4-4 cards, 4-6-5 Amex,
- * long account numbers). Phone numbers use 3-digit groups, so a pair of them
- * side by side does not match.
+ * 10 or more digits written as groups joined by single dashes, dots, spaces,
+ * or slashes, where every group but the last has at least 4 digits
+ * ("0001 2345 6789", "4111/1111/1111/1111", 4-6-5 Amex). Phone numbers use
+ * 3-digit groups, so phones (even two side by side) and dates do not match.
+ * A list of years and a trailing ".dd" (cents) are not account numbers.
  */
-function hasGroupedCardNumber(text: string) {
-  return [...text.matchAll(DIGIT_RUN_RE)].some(([run]) => {
-    const groups = run.split(/[ -]/);
+function hasGroupedNumber(text: string) {
+  return [...text.matchAll(DIGIT_RUN_RE)].some((match) => {
+    const groups = match[0].replace(/\.\d\d$/, "").split(SEP_RE);
+    if (groups.every((g) => YEAR_RE.test(g))) return false;
+    if (isInternationalPhone(text, match.index, groups.join("").length)) return false;
     return groups.some((_, start) => {
       let digits = 0;
       for (const group of groups.slice(start)) {
+        // A run of 10+ digits is judged on its own by the long-run rule.
+        if (group.length >= 10) return false;
         digits += group.length;
-        if (digits >= 13 && digits <= 19) return true;
+        if (digits >= 10) return true;
         if (group.length < 4) return false;
       }
       return false;
@@ -57,10 +73,17 @@ function hasGroupedCardNumber(text: string) {
 /** Full account, card, or SSN shapes. */
 export function findFullNumber(text: string): PrivacyReason | null {
   if (SSN_RE.test(text)) return "ssn";
-  for (const run of text.match(LONG_RUN_RE) ?? []) {
-    if (!isPhoneShaped(run)) return run.length === 9 ? "ssn" : "full_number";
+  for (const match of text.matchAll(LONG_RUN_RE)) {
+    const run = match[0];
+    if (isPhoneShaped(run) || isInternationalPhone(text, match.index, run.length)) continue;
+    return run.length === 9 ? "ssn" : "full_number";
   }
-  return hasGroupedCardNumber(text) ? "full_number" : null;
+  return hasGroupedNumber(text) ? "full_number" : null;
+}
+
+/** True when text contains a full account, card, or Social Security number shape. */
+export function looksLikeFullNumber(text: string) {
+  return findFullNumber(text) !== null;
 }
 
 /**
@@ -156,11 +179,16 @@ export function findBlocked(text: string): PrivacyFinding | null {
   return finding?.level === "block" ? finding : null;
 }
 
-/** Field kinds with their own strict format are not scanned. */
-const UNSCANNED_KINDS = new Set(["last4", "email", "phone"]);
+/**
+ * Last-4, email, and phone fields have their own strict format, so the
+ * secret-looking heuristics (which would trip on an email address) are
+ * skipped. They still get the block-level checks: a card number is a card
+ * number in any field.
+ */
+const FORMAT_KINDS = new Set(["last4", "email", "phone"]);
 
 export function scanField(kind: string, value: string): PrivacyFinding | null {
-  return UNSCANNED_KINDS.has(kind) ? null : scanText(value);
+  return FORMAT_KINDS.has(kind) ? findBlocked(value) : scanText(value);
 }
 
 /**

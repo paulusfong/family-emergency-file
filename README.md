@@ -59,14 +59,14 @@ See `.env.example`. Key vars: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `DATABASE
 - better-auth: `user`, `session`, `account`, `verification`
 - `household_files`: one per user; `privacy_ack_at` records when the first-run privacy sheet was dismissed
 - `sections`: twelve slots S1–S12 (the stored `status` column is unused; status is derived, see Progress)
-- `checklist_items`: starter items per section (Clark-aligned, `src/lib/sections.ts`), status `open|done|skipped`
+- `checklist_items`: 65 starter items across S1–S12 (5, 8, 5, 4, 6, 6, 4, 6, 4, 6, 7, 4; Clark-aligned, `src/lib/sections.ts`), status `open|done|skipped`
 - `entries`: `contact|account|policy|document_location|access_plan|note`, label plus metadata JSON validated by `src/lib/entry-fields.ts`
 
 On first successful session, `ensureHouseholdFile` creates exactly one file and seeds the twelve sections and their checklist items in one atomic batch. The same batch backfills files created before a section or item existed.
 
 Entries hold pointers and metadata only: institution, last 4 digits at most, where to find it, an access plan, and who to call. There is no password, PIN, or full-number field. S10's primary entry type is `access_plan` (provider, where the login lives, recovery and emergency access, who to call), and nothing in it asks for a credential. Every read and write is scoped to a section inside the signed-in user's own file, so another user's ids 404.
 
-`/app/sections/[key]` lists the checklist and entries; `/app/sections/[key]/entries/new?type=…` and `/app/sections/[key]/entries/[id]` autosave (debounced, serialized) and show an error toast with Retry when a save fails.
+`/app/sections/[key]` lists the checklist and entries; `/app/sections/[key]/entries/new?type=…` and `/app/sections/[key]/entries/[id]` autosave (debounced, serialized) and show an error toast with Retry when a save is rejected or fails, and an offline toast with Retry while the browser is offline; the status never reads "All changes saved." in either case.
 
 ## Progress
 
@@ -85,10 +85,10 @@ On the first dashboard visit a non-modal "Access plans, never passwords" sheet e
 `src/lib/privacy-warn.ts` is shared by the editor and the server:
 
 - **Block** (`findBlocked`): the server's `validateEntry` rejects these and the editor will not autosave them, with no way to confirm past them.
-  - Full numbers (`findFullNumber`): SSN-shaped `ddd-dd-dddd` or `ddd dd dddd`; digit runs of 9+ unless phone-shaped (10 digits, or 11 starting with 1); and 13–19 digits written in groups of 4+ (cards, account numbers).
+  - Full numbers (`findFullNumber` / `looksLikeFullNumber`): SSN-shaped `ddd-dd-dddd` with dash, dot, space, or slash separators; digit runs of 9+ unless phone-shaped (10 digits, 11 starting with 1, or up to 15 after a `+`); and 10+ digits written in groups where every group but the last has 4+ digits (`0001 2345 6789`, `4111/1111/1111/1111`). Date ranges (`2026-09-29 - 2027-09-29`), lists of years, and amounts with cents are allowed.
   - Labelled credentials: `password`, `passwd`, `passcode`, `pin` (`pin code`, `pin number`), `secret`, `security answer`, `backup code(s)`, `2fa code(s)`, `2fa backup code(s)`, in any case, followed by `:` or `=` and a value. Every label in the text is checked. A pointer (`Password: in the family vault`, `stored`, `kept`, `see`, …), `none`, `n/a`, `tbd`, `unknown`, or punctuation only is not a value.
 - **Warn** (`looksLikeSecretToken` and softer label rules): a single token of 8+ characters with a letter and a digit plus mixed case or a symbol and at least 2.5 bits of entropy per character, or 20+ characters at 3.5; softer labels (`pwd`, `passphrase`, `seed phrase`, `recovery code`, `security code`, `cvv`, `otp`) with `:`, `=`, or `#`, and any credential label with `#`; `pin 1234`, `cvv 123`; and `password is "…"`. Emails, URLs, and domains are skipped. The editor holds the save and offers "It’s not a secret, save it" for that exact value. The server allows warnings, because the heuristic can be wrong.
 
 Autosave never sends a draft while any field has a block-level finding, including an edit made while an earlier save is in flight, and an entry saved before a rule changed will not re-save until the flagged field is fixed.
 
-Last-4, email, and phone fields are validated by their own rules and not scanned.
+Last-4, email, and phone fields keep their own format rules and skip the warn heuristics (an email address can look like a token), but every field, those included, gets the block-level checks.

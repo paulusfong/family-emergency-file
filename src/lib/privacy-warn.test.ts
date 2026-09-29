@@ -7,6 +7,7 @@ import {
   entropyPerChar,
   findBlocked,
   findFullNumber,
+  looksLikeFullNumber,
   looksLikeSecretToken,
   pendingFindings,
   scanField,
@@ -60,12 +61,70 @@ describe("findFullNumber", () => {
       "Renews 2026-09-29",
       "ZIP 12345-6789",
       "ends 0000",
-      "1234-5678-9012",
       "12345678",
       "",
     ]) {
       assert.equal(findFullNumber(ok), null, ok);
     }
+  });
+});
+
+describe("QA blockers: looksLikeFullNumber", () => {
+  const cases = ["123 45 6789", "0001 2345 6789", "123.45.6789", "4111/1111/1111/1111"];
+
+  it("QA-2: catches each shape on its own", () => {
+    for (const text of cases) assert.equal(looksLikeFullNumber(text), true, text);
+  });
+
+  it("QA-2: catches each shape inside a sentence", () => {
+    for (const text of cases) {
+      assert.equal(looksLikeFullNumber(`My number is ${text}, from the statement.`), true, text);
+      assert.equal(looksLikeFullNumber(`(${text})`), true, text);
+    }
+  });
+
+  it("QA-2: allows the date range 2026-09-29 - 2027-09-29", () => {
+    assert.equal(looksLikeFullNumber("2026-09-29 - 2027-09-29"), false);
+    assert.equal(looksLikeFullNumber("Policy term 2026-09-29 - 2027-09-29, renews yearly"), false);
+    assert.equal(looksLikeFullNumber("2026/09/29 - 2027/09/29"), false);
+    assert.equal(looksLikeFullNumber("2026.09.29 2027.09.29"), false);
+  });
+
+  it("QA-1: catches a card number used as an email or phone", () => {
+    assert.equal(looksLikeFullNumber("4111111111111111@example.com"), true);
+    assert.equal(looksLikeFullNumber("4111111111111111"), true);
+  });
+
+  it("grouped numbers: 10 to 12 digits in 4+ digit groups, any separator", () => {
+    assert.equal(findFullNumber("0001-2345-6789"), "full_number");
+    assert.equal(findFullNumber("0001.2345.6789"), "full_number");
+    assert.equal(findFullNumber("1234 5678 90"), "full_number");
+    assert.equal(findFullNumber("1234 5678 9"), null);
+    assert.equal(findFullNumber("123 4567 8901"), null);
+    assert.equal(findFullNumber("4111.1111.1111.1111"), "full_number");
+  });
+
+  it("SSN shape with dots, slashes, or mixed separators", () => {
+    assert.equal(findFullNumber("123/45/6789"), "ssn");
+    assert.equal(findFullNumber("123.45-6789"), "ssn");
+    assert.equal(findFullNumber("1123.45.6789"), null);
+    assert.equal(findFullNumber("123.45.67890"), null);
+  });
+
+  it("allows international phones, lists of years, and amounts with cents", () => {
+    assert.equal(findFullNumber("+44 7700 900123"), null);
+    assert.equal(findFullNumber("+49 1512 3456789"), null);
+    assert.equal(findFullNumber("+4915123456789"), null);
+    assert.equal(findFullNumber("+441234567890123"), null);
+    assert.equal(findFullNumber("+4412345678901234"), "full_number");
+    assert.equal(findFullNumber("+4412 3456 7890 1234"), "full_number");
+    assert.equal(findFullNumber("x+4111 1111 1111 1111 1"), "full_number");
+    assert.equal(findFullNumber("Returns 2021 2022 2023 2024"), null);
+    assert.equal(findFullNumber("Returns 1999/2000/2001"), null);
+    assert.equal(findFullNumber("2021 2022 4111 1111"), "full_number");
+    assert.equal(findFullNumber("$25000000.50 face value"), null);
+    assert.equal(findFullNumber("25000000.505"), "full_number");
+    assert.equal(findFullNumber("250000000.50"), "ssn");
   });
 });
 
@@ -259,10 +318,17 @@ describe("scanText", () => {
 });
 
 describe("scanField", () => {
-  it("skips last-4, email, and phone fields, which have their own formats", () => {
-    assert.equal(scanField("last4", "123456789"), null);
+  it("skips the secret heuristics for last-4, email, and phone, which have their own formats", () => {
     assert.equal(scanField("email", "Hunter2!x@example.com"), null);
-    assert.equal(scanField("phone", "123456789"), null);
+    assert.equal(scanField("phone", "+1 (555) 010-0199"), null);
+    assert.equal(scanField("last4", "1234"), null);
+  });
+
+  it("QA-1: still runs the block-level checks on last-4, email, and phone", () => {
+    assert.equal(scanField("phone", "4111111111111111")?.message, FULL_NUMBER_ERROR);
+    assert.equal(scanField("email", "4111111111111111@example.com")?.message, FULL_NUMBER_ERROR);
+    assert.equal(scanField("email", "password=hunter2@example.com")?.message, CREDENTIAL_ERROR);
+    assert.equal(scanField("last4", "123456789")?.reason, "ssn");
   });
 
   it("scans text and textarea fields", () => {
@@ -302,15 +368,22 @@ describe("pendingFindings", () => {
     assert.deepEqual(Object.keys(pendingFindings(fields, credential, { notes: credential.notes })), ["notes"]);
   });
 
-  it("treats missing values as empty and skips unscanned kinds", () => {
-    assert.deepEqual(pendingFindings(fields, { last4: "123456789" }, {}), {});
+  it("treats missing values as empty, and holds a full number even in a format field", () => {
+    assert.deepEqual(pendingFindings(fields, { last4: "1234" }, {}), {});
+    assert.deepEqual(pendingFindings(fields, { last4: "123456789" }, { last4: "123456789" }), {
+      last4: { level: "block", reason: "ssn", message: FULL_NUMBER_ERROR },
+    });
   });
 });
 
 describe("rule boundaries", () => {
-  it("blocks exactly 19 grouped digits and allows 20", () => {
+  it("blocks grouped numbers from 10 digits, and leaves 10+ digit groups to the long-run rule", () => {
     assert.equal(findFullNumber("12345678 1234 1234567"), "full_number");
-    assert.equal(findFullNumber("12345678 1234 12345678"), null);
+    assert.equal(findFullNumber("12345678 12"), "full_number");
+    assert.equal(findFullNumber("12345678 1"), null);
+    assert.equal(findFullNumber("8005550100 1234"), null);
+    assert.equal(findFullNumber("1234 8005550100"), null);
+    assert.equal(findFullNumber("5550100000 5550100001"), null);
   });
 
   it("finds a card number that starts after a short leading group", () => {

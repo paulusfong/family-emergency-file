@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  ENTRY_TYPE_DEFS,
   CREDENTIAL_ERROR,
+  ENTRY_TYPE_DEFS,
   FULL_NUMBER_ERROR,
   LIMITS,
   entrySummary,
@@ -125,6 +125,60 @@ describe("entry field definitions", () => {
     assert.equal(isEntryType("password"), false);
     assert.equal(isEntryType(undefined), false);
     assert.equal(isEntryType(1), false);
+  });
+});
+
+describe("QA blockers: every field runs the shared privacy checks", () => {
+  const contact = (fields: Record<string, string>) => validateEntry("contact", { label: "Pat", ...fields });
+
+  it("QA-1: rejects a full card number typed into Phone", () => {
+    assert.deepEqual(contact({ phone: "4111111111111111" }), {
+      ok: false,
+      fieldErrors: { phone: FULL_NUMBER_ERROR },
+    });
+    assert.deepEqual(contact({ phone: "4111 1111 1111 1111" }), {
+      ok: false,
+      fieldErrors: { phone: FULL_NUMBER_ERROR },
+    });
+    assert.deepEqual(contact({ phone: "123 45 6789" }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } });
+  });
+
+  it("QA-1: rejects a full card number in Email, and a labelled credential in either", () => {
+    assert.deepEqual(contact({ email: "4111111111111111@example.com" }), {
+      ok: false,
+      fieldErrors: { email: FULL_NUMBER_ERROR },
+    });
+    assert.deepEqual(contact({ email: "password=hunter2@example.com" }), {
+      ok: false,
+      fieldErrors: { email: CREDENTIAL_ERROR },
+    });
+    assert.deepEqual(contact({ phone: "PIN=4821" }), { ok: false, fieldErrors: { phone: CREDENTIAL_ERROR } });
+  });
+
+  it("QA-1: still accepts real phones and emails, and Last 4 stays 4 digits", () => {
+    const ok = contact({ phone: "+1 (555) 010-0199", email: "pat@example.com" });
+    assert.equal(ok.ok, true);
+    assert.equal(contact({ phone: "8005550100" }).ok, true);
+    assert.equal(contact({ phone: "+44 7700 900123" }).ok, true);
+    assert.equal(validateEntry("account", { label: "Joint", last4: "1111" }).ok, true);
+  });
+
+  it("QA-2: rejects spaced, grouped, dotted, and slashed numbers in text fields", () => {
+    for (const bad of ["123 45 6789", "0001 2345 6789", "123.45.6789", "4111/1111/1111/1111"]) {
+      assert.deepEqual(
+        validateEntry("account", { label: "Joint", institution: `Example Bank ${bad} (from the statement)` }),
+        { ok: false, fieldErrors: { institution: FULL_NUMBER_ERROR } },
+        bad,
+      );
+    }
+  });
+
+  it("QA-2: accepts a policy date range", () => {
+    assert.deepEqual(validateEntry("policy", { label: "Term life", notes: "Covers 2026-09-29 - 2027-09-29" }), {
+      ok: true,
+      label: "Term life",
+      payload: { notes: "Covers 2026-09-29 - 2027-09-29" },
+    });
   });
 });
 
