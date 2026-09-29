@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-test-module-mocks --import tsx --import ./src/test/setup.mjs --test 'src/**/*.test.ts'",
+    "test": "node --experimental-test-module-mocks --import tsx --import ./src/test/setup.mjs --test 'src/**/*.test.ts' 'scripts/**/*.test.mjs'",
     "test:coverage": "node scripts/coverage.mjs",
     "test:mutation": "stryker run",
     "db:push": "drizzle-kit push"
@@ -22,9 +22,12 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.14.5",
     "@stryker-mutator/core": "^10.0.0",
     "@stryker-mutator/typescript-checker": "^10.0.0",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
