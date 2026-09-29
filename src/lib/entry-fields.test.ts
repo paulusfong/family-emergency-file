@@ -7,6 +7,7 @@ import {
   LIMITS,
   PHONE_ERROR,
   entrySummary,
+  fieldErrorSummary,
   isEntryType,
   readPayload,
   validateEntry,
@@ -183,6 +184,119 @@ describe("QA blockers: every field runs the shared privacy checks", () => {
   });
 });
 
+describe("QA blockers: phone extensions and mistyped phones", () => {
+  const contact = (fields: Record<string, string>) => validateEntry("contact", { label: "Pat", ...fields });
+  // QA's two repros, then four generated joins (see full-number.test.ts).
+  const LUHN_EXTENSIONS = [
+    "(404) 683-5510 x373597",
+    "404-683-5510 ext. 373597",
+    "+1 312-867-5309 extension 179190",
+    "1-312-867-5309 x179190",
+    "312.867.5309 ext 179190",
+    "(312) 867-5309 #179190",
+  ];
+
+  it("blocks a Luhn-valid phone-plus-extension join in the label and every text field of every type", () => {
+    let checked = 0;
+    for (const def of Object.values(ENTRY_TYPE_DEFS)) {
+      for (const field of def.fields.filter((f) => f.kind === "text" || f.kind === "textarea")) {
+        for (const v of LUHN_EXTENSIONS) {
+          assert.deepEqual(
+            validateEntry(def.type, { label: "Pat", [field.name]: `Desk line ${v}` }),
+            { ok: false, fieldErrors: { [field.name]: FULL_NUMBER_ERROR } },
+            `${def.type}.${field.name}: ${v}`,
+          );
+          checked++;
+        }
+      }
+      for (const v of LUHN_EXTENSIONS) {
+        assert.deepEqual(validateEntry(def.type, { label: `Pat ${v}` }), { ok: false, fieldErrors: { label: FULL_NUMBER_ERROR } });
+      }
+    }
+    assert.ok(checked >= 6 * 15, String(checked));
+  });
+
+  it("rejects any extension in Phone", () => {
+    for (const phone of [
+      ...LUHN_EXTENSIONS,
+      "(404) 555-0123 x12",
+      "404 555 0123 x12",
+      "(404) 555-0123 ext. 12",
+      "(404) 555-0123 #12",
+      "+1 404 555 0123;ext=12",
+      "+1 404 555 0123 X 12",
+    ]) {
+      const res = contact({ phone });
+      assert.equal(res.ok, false, phone);
+      assert.ok(!res.ok && res.fieldErrors.phone, phone);
+    }
+    assert.deepEqual(contact({ phone: "(404) 555-0123 x12" }), { ok: false, fieldErrors: { phone: PHONE_ERROR } });
+    assert.deepEqual(contact({ phone: "(404) 683-5510 x373597" }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } });
+    assert.match(PHONE_ERROR, /no extension/);
+  });
+
+  it("gives a valid US number typed without separators the phone message", () => {
+    for (const phone of ["4045550123", "3128675309"]) {
+      assert.deepEqual(contact({ phone }), { ok: false, fieldErrors: { phone: PHONE_ERROR } }, phone);
+    }
+    // Outside Phone the same run is a full number.
+    assert.deepEqual(validateEntry("note", { label: "Pat", notes: "4045550123" }), {
+      ok: false,
+      fieldErrors: { notes: FULL_NUMBER_ERROR },
+    });
+  });
+
+  it("keeps the privacy message for every other digit run, card, SSN, or credential in Phone", () => {
+    for (const phone of [
+      "0001234567",
+      "14045550123",
+      "4045550123 x12",
+      "123 456 789",
+      "4111111111111111",
+      "4111-1111-1111-1111",
+      "123-45-6789",
+      "123 45 6789",
+    ]) {
+      assert.deepEqual(contact({ phone }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } }, phone);
+    }
+    assert.deepEqual(contact({ phone: "PIN=4821" }), { ok: false, fieldErrors: { phone: CREDENTIAL_ERROR } });
+  });
+
+  it("gives a mistyped phone that is not a long run the phone message", () => {
+    for (const phone of ["(404) 555-01", "404-555-01", "555-0123", "404-555-0l23"]) {
+      assert.deepEqual(contact({ phone }), { ok: false, fieldErrors: { phone: PHONE_ERROR } }, phone);
+    }
+  });
+
+  it("blocks a well-formed phone whose national number is a Luhn number", () => {
+    // Passes the phone format, so only the privacy check rejects it.
+    assert.deepEqual(contact({ phone: "+49 2303 0922 6114 4" }), { ok: false, fieldErrors: { phone: FULL_NUMBER_ERROR } });
+  });
+
+  it("keeps the privacy message over the format message in Email and Last 4", () => {
+    assert.deepEqual(contact({ email: "4045550123" }), { ok: false, fieldErrors: { email: FULL_NUMBER_ERROR } });
+    assert.deepEqual(validateEntry("account", { label: "Joint", last4: "4045550123" }), {
+      ok: false,
+      fieldErrors: { last4: FULL_NUMBER_ERROR },
+    });
+  });
+});
+
+describe("fieldErrorSummary", () => {
+  it("names the one wrong field with its message", () => {
+    assert.equal(fieldErrorSummary("contact", { phone: PHONE_ERROR }), `Phone: ${PHONE_ERROR}`);
+    assert.equal(fieldErrorSummary("contact", { label: "Name is required." }), "Name: Name is required.");
+    assert.equal(fieldErrorSummary("contact", { fax: "Invalid value." }), "fax: Invalid value.");
+  });
+
+  it("lists the names when several fields are wrong", () => {
+    assert.equal(
+      fieldErrorSummary("account", { label: "x", last4: "y", notes: "z" }),
+      "Fix these fields before this can save: Account nickname, Last 4 digits (optional), Notes.",
+    );
+  });
+});
+
 describe("validateEntry", () => {
   it("trims, keeps known non-blank fields, and drops unknown ones", () => {
     const res = validateEntry("account", {
@@ -222,6 +336,11 @@ describe("validateEntry", () => {
     assert.deepEqual(validateEntry("note", { label: 5, notes: ["x"] }), {
       ok: false,
       fieldErrors: { label: "Invalid value.", notes: "Invalid value." },
+    });
+    // A non-string is "Invalid value." even in a field with its own format rule.
+    assert.deepEqual(validateEntry("account", { label: "Joint", last4: 1234 }), {
+      ok: false,
+      fieldErrors: { last4: "Invalid value." },
     });
     assert.deepEqual(validateEntry("note", { label: "Ok", notes: null }), {
       ok: true,
@@ -284,7 +403,6 @@ describe("validateEntry", () => {
       },
     );
     assert.equal(validateEntry("contact", { label: "Pat", phone: "12345" }).ok, false);
-    assert.equal(validateEntry("contact", { label: "Pat", phone: "404 555 0123 x12" }).ok, true);
     assert.equal(validateEntry("contact", { label: "Pat", phone: "404/555/0123" }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", phone: "~404-555-0123" }).ok, false);
     assert.equal(validateEntry("contact", { label: "Pat", phone: "+1 404 555 0123;ext=12" }).ok, false);
