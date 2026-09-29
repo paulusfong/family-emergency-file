@@ -10,7 +10,8 @@ export function isProductionMailEnv(env: Record<string, string | undefined>): bo
 }
 
 /**
- * Send outbound email. Fail-closed in production/Vercel without RESEND_API_KEY.
+ * Send outbound email. Fail-closed in production/Vercel without RESEND_API_KEY,
+ * and throws when Resend rejects the send so the sign-in UI can report it.
  * In local/dev without Resend: log the body and write tmp/last-magic-link.txt when
  * the body contains a sign-in URL.
  */
@@ -31,7 +32,9 @@ export async function sendMail(
       body: JSON.stringify({ from: mailFrom(env), to, subject, text }),
     });
     if (!res.ok) {
+      // Never log the body: it contains the magic-link URL.
       console.error("Resend failed", res.status);
+      throw new Error(`Resend failed with status ${res.status}`);
     }
     return;
   }

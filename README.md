@@ -32,11 +32,13 @@ Open http://localhost:3000. Request a magic link on `/sign-in`. Without `RESEND_
 | `npm run build` / `start` | Production build |
 | `npm run lint` | ESLint |
 | `npm test` | Node test runner + tsx |
-| `npm run test:coverage` | c8 gate (see `.c8rc.json`) |
-| `npm run test:mutation` | Stryker on `src/lib` business logic (break 100) |
+| `npm run test:coverage` | c8 gate on all of `src/**`: 100% lines/statements/functions/branches |
+| `npm run test:mutation` | Stryker on `src/lib`, server actions, and `proxy.ts` (break 90) |
 | `npm run db:push` | Push Drizzle schema (Turso dialect) |
 
-Migrations live in `drizzle/` (`npx drizzle-kit generate`).
+Migrations live in `drizzle/` (`npx drizzle-kit generate`). drizzle-kit refuses a non-`file:` `DATABASE_URL` unless `FEF_ALLOW_REMOTE_DB=1`, so an ambient remote URL can never receive this schema by accident. Tests always run against throwaway local sqlite files (`src/test/setup.mjs`).
+
+In production (`NODE_ENV=production` or on Vercel) the app fails closed without `BETTER_AUTH_SECRET` (≥32 chars), `BETTER_AUTH_URL`, and `RESEND_API_KEY`.
 
 ## Env vars
 

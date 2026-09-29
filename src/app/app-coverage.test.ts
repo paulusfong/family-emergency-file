@@ -11,6 +11,7 @@ import {
   installNextMocks,
   renderElement,
   resetHarness,
+  setHeaders,
 } from "../test/next-harness";
 import { applySchema } from "../test/apply-schema";
 
@@ -36,11 +37,22 @@ const fakeUser = {
 
 let sessionUser: typeof fakeUser | null = fakeUser;
 
+const calls: { name: string; args: unknown }[] = [];
+
 const authApi = {
   getSession: async () => (sessionUser ? { user: sessionUser } : null),
-  signInMagicLink: async () => ({}),
-  magicLinkVerify: async () => ({ user: fakeUser }),
-  signOut: async () => ({}),
+  signInMagicLink: async (args: unknown): Promise<unknown> => {
+    calls.push({ name: "signInMagicLink", args });
+    return {};
+  },
+  magicLinkVerify: async (args: unknown): Promise<unknown> => {
+    calls.push({ name: "magicLinkVerify", args });
+    return { user: fakeUser };
+  },
+  signOut: async (args: unknown) => {
+    calls.push({ name: "signOut", args });
+    return {};
+  },
   handler: async (req?: Request) => new Response(req ? "auth-ok" : "auth-ok", { status: 200 }),
 };
 
@@ -123,11 +135,13 @@ describe("app coverage", async () => {
     const sent = await renderElement(
       await SignIn({ searchParams: Promise.resolve({ sent: "1" }) }),
     );
-    assert.match(sent, /Check your email/);
-    const err = await renderElement(
-      await SignIn({ searchParams: Promise.resolve({ error: "invalid" }) }),
-    );
-    assert.match(err, /invalid or expired/i);
+    assert.match(sent, /If that address can receive email/);
+    const render = async (error: string) =>
+      renderElement(await SignIn({ searchParams: Promise.resolve({ error }) }));
+    assert.match(await render("invalid"), /invalid or expired/i);
+    assert.match(await render("email"), /Enter a valid email address/);
+    assert.match(await render("send"), /couldn&#x27;t send the sign-in email/);
+    assert.match(await render("unknown-code"), /invalid or expired/i);
   });
 
   it("sign-in redirects when already signed in", async () => {
@@ -172,9 +186,28 @@ describe("app coverage", async () => {
     const { default: Dash } = await import("@/app/app/page");
     const html = await renderElement(await Dash());
     assert.match(html, /0%/);
+    assert.match(html, /nothing filled in yet/);
     assert.match(html, /S1/);
     assert.match(html, /S12/);
     assert.ok(fileId);
+  });
+
+  it("dashboard drops the empty-state copy once a section is complete", async () => {
+    resetHarness();
+    sessionUser = fakeUser;
+    const { eq, and } = await import("drizzle-orm");
+    await db
+      .update(schema.sections)
+      .set({ status: "complete" })
+      .where(and(eq(schema.sections.householdFileId, fileId), eq(schema.sections.sectionKey, "S1")));
+    const { default: Dash } = await import("@/app/app/page");
+    const html = await renderElement(await Dash());
+    assert.match(html, /8%/);
+    assert.doesNotMatch(html, /nothing filled in yet/);
+    await db
+      .update(schema.sections)
+      .set({ status: "not_started" })
+      .where(and(eq(schema.sections.householdFileId, fileId), eq(schema.sections.sectionKey, "S1")));
   });
 
   it("renders settings stub", async () => {
@@ -224,106 +257,150 @@ describe("app coverage", async () => {
     assert.match(html, /child/);
   });
 
-  it("exercises server actions", async () => {
-    resetHarness();
-    sessionUser = null;
-    const actions = await import("@/app/actions");
+  async function redirectOf(run: () => Promise<unknown>) {
+    try {
+      await run();
+    } catch (e) {
+      if (e instanceof NextRedirect) return e.url;
+      throw e;
+    }
+    throw new Error("expected a redirect");
+  }
 
-    await assert.rejects(
-      () => actions.requestMagicLink(new FormData()),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/sign-in");
-        return true;
-      },
-    );
-
+  function form(entries: Record<string, string>) {
     const fd = new FormData();
-    fd.set("email", "new@ex.com");
-    await assert.rejects(
-      () => actions.requestMagicLink(fd),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/sign-in?sent=1");
-        return true;
-      },
-    );
+    for (const [k, v] of Object.entries(entries)) fd.set(k, v);
+    return fd;
+  }
 
-    // signInMagicLink throws path
+  it("requestMagicLink rejects missing or malformed email without calling auth", async () => {
+    resetHarness();
+    calls.length = 0;
+    const actions = await import("@/app/actions");
+    assert.equal(await redirectOf(() => actions.requestMagicLink(new FormData())), "/sign-in?error=email");
+    assert.equal(await redirectOf(() => actions.requestMagicLink(form({ email: "nope" }))), "/sign-in?error=email");
+    assert.deepEqual(calls, []);
+  });
+
+  it("requestMagicLink sends a normalized address and shows the neutral sent message", async () => {
+    resetHarness();
+    setHeaders({ "x-test": "1" });
+    calls.length = 0;
+    const actions = await import("@/app/actions");
+    const url = await redirectOf(() => actions.requestMagicLink(form({ email: "  New@Ex.COM " })));
+    assert.equal(url, "/sign-in?sent=1");
+    assert.equal(calls.length, 1);
+    const args = calls[0].args as { body: unknown; headers: Headers };
+    assert.equal(calls[0].name, "signInMagicLink");
+    assert.deepEqual(args.body, { email: "new@ex.com", callbackURL: "/app" });
+    assert.equal(args.headers.get("x-test"), "1");
+  });
+
+  it("requestMagicLink reports a delivery failure instead of 'sent'", async () => {
+    resetHarness();
+    const actions = await import("@/app/actions");
     const orig = authApi.signInMagicLink;
+    const boom = new Error("Resend failed with status 500");
     authApi.signInMagicLink = async () => {
-      throw new Error("boom");
+      throw boom;
     };
-    const fd2 = new FormData();
-    fd2.set("email", "err@ex.com");
-    await assert.rejects(
-      () => actions.requestMagicLink(fd2),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/sign-in?sent=1");
-        return true;
-      },
-    );
-    authApi.signInMagicLink = orig;
+    const errors: unknown[][] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => {
+      errors.push(a);
+    };
+    try {
+      const url = await redirectOf(() => actions.requestMagicLink(form({ email: "err@ex.com" })));
+      assert.equal(url, "/sign-in?error=send");
+    } finally {
+      console.error = origErr;
+      authApi.signInMagicLink = orig;
+    }
+    assert.deepEqual(errors, [["magic-link send failed", boom]]);
+  });
 
-    await assert.rejects(
-      () => actions.confirmMagicLink(new FormData()),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/sign-in");
-        return true;
-      },
-    );
+  it("confirmMagicLink requires a token", async () => {
+    resetHarness();
+    calls.length = 0;
+    const actions = await import("@/app/actions");
+    assert.equal(await redirectOf(() => actions.confirmMagicLink(new FormData())), "/sign-in");
+    assert.equal(await redirectOf(() => actions.confirmMagicLink(form({ token: "   " }))), "/sign-in");
+    assert.deepEqual(calls, []);
+  });
 
-    const ok = new FormData();
-    ok.set("token", "good");
-    await assert.rejects(
-      () => actions.confirmMagicLink(ok),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/app");
-        return true;
-      },
-    );
+  it("confirmMagicLink verifies the trimmed token and creates the household file", async () => {
+    resetHarness();
+    calls.length = 0;
+    const actions = await import("@/app/actions");
+    const newUserId = id();
+    await db.insert(schema.user).values({
+      id: newUserId,
+      name: "New",
+      email: "confirm-new@ex.com",
+      emailVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const orig = authApi.magicLinkVerify;
+    authApi.magicLinkVerify = async (args: unknown) => {
+      calls.push({ name: "magicLinkVerify", args });
+      return { user: { ...fakeUser, id: newUserId } };
+    };
+    try {
+      assert.equal(await redirectOf(() => actions.confirmMagicLink(form({ token: "  good  " }))), "/app");
+    } finally {
+      authApi.magicLinkVerify = orig;
+    }
+    assert.deepEqual((calls[0].args as { query: unknown }).query, { token: "good" });
+    const { eq } = await import("drizzle-orm");
+    const files = await db
+      .select()
+      .from(schema.householdFiles)
+      .where(eq(schema.householdFiles.userId, newUserId));
+    assert.equal(files.length, 1);
+  });
 
-    const badVerify = authApi.magicLinkVerify;
+  it("confirmMagicLink tolerates a verify result without a user", async () => {
+    resetHarness();
+    const actions = await import("@/app/actions");
+    const orig = authApi.magicLinkVerify;
+    for (const result of [undefined, null, {}, { user: {} }]) {
+      authApi.magicLinkVerify = async () => result;
+      assert.equal(await redirectOf(() => actions.confirmMagicLink(form({ token: "x" }))), "/app");
+    }
+    authApi.magicLinkVerify = orig;
+  });
+
+  it("confirmMagicLink sends invalid/expired tokens back with an error", async () => {
+    resetHarness();
+    const actions = await import("@/app/actions");
+    const orig = authApi.magicLinkVerify;
     authApi.magicLinkVerify = async () => {
-      throw new Error("bad");
+      throw new Error("INVALID_TOKEN");
     };
-    const bad = new FormData();
-    bad.set("token", "bad");
-    await assert.rejects(
-      () => actions.confirmMagicLink(bad),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/sign-in?error=invalid");
-        return true;
-      },
-    );
-    authApi.magicLinkVerify = badVerify;
+    try {
+      assert.equal(await redirectOf(() => actions.confirmMagicLink(form({ token: "bad" }))), "/sign-in?error=invalid");
+    } finally {
+      authApi.magicLinkVerify = orig;
+    }
+  });
 
-    // verify returns no user id
-    authApi.magicLinkVerify = async () => ({}) as { user: typeof fakeUser };
-    const noUser = new FormData();
-    noUser.set("token", "nouser");
-    await assert.rejects(
-      () => actions.confirmMagicLink(noUser),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/app");
-        return true;
-      },
-    );
-    authApi.magicLinkVerify = badVerify;
+  it("signOut revokes via auth and returns home", async () => {
+    resetHarness();
+    calls.length = 0;
+    const actions = await import("@/app/actions");
+    assert.equal(await redirectOf(() => actions.signOut()), "/");
+    assert.equal(calls[0].name, "signOut");
+    assert.ok((calls[0].args as { headers: Headers }).headers instanceof Headers);
+  });
 
-    await assert.rejects(
-      () => actions.signOut(),
-      (e: unknown) => {
-        assert.ok(e instanceof NextRedirect);
-        assert.equal((e as NextRedirect).url, "/");
-        return true;
-      },
-    );
+  it("/app layout redirects logged-out users and renders children when signed in", async () => {
+    resetHarness();
+    const { default: AppLayout } = await import("@/app/app/layout");
+    sessionUser = null;
+    assert.equal(await redirectOf(() => AppLayout({ children: "secret" })), "/sign-in");
+    sessionUser = fakeUser;
+    assert.equal(await AppLayout({ children: "secret" }), "secret");
   });
 
   it("auth API route handlers respond", async () => {

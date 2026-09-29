@@ -3,13 +3,17 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import { normalizeEmail } from "@/lib/email";
 import { ensureHouseholdFile } from "@/lib/household";
 
+/**
+ * Request a magic link. Unknown and known addresses get the same neutral
+ * "sent" message (no account enumeration); only a real delivery failure is
+ * reported, so the user knows to retry.
+ */
 export async function requestMagicLink(formData: FormData) {
-  const email = String(formData.get("email") ?? "")
-    .trim()
-    .toLowerCase();
-  if (!email) redirect("/sign-in");
+  const email = normalizeEmail(formData.get("email"));
+  if (!email) redirect("/sign-in?error=email");
 
   try {
     await auth.api.signInMagicLink({
@@ -17,7 +21,8 @@ export async function requestMagicLink(formData: FormData) {
       headers: await headers(),
     });
   } catch (err) {
-    console.error("magic-link request failed", err);
+    console.error("magic-link send failed", err);
+    redirect("/sign-in?error=send");
   }
 
   redirect("/sign-in?sent=1");

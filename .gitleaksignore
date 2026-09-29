@@ -1,0 +1,11 @@
+# Dummy BETTER_AUTH_SECRET literals from test/CI config in already-pushed commits
+# (history is not rewritten; no force-push). Not real credentials. Current
+# tree generates the CI secret per run and uses randomBytes in tests.
+1cec71c5289b05904405ca18b39d99b2052536f2:.github/workflows/ci.yml:generic-api-key:17
+4154fe835a680087f36aaba1f087c3364b2e296d:.github/workflows/ci.yml:generic-api-key:33
+4154fe835a680087f36aaba1f087c3364b2e296d:.github/workflows/ci.yml:generic-api-key:38
+4154fe835a680087f36aaba1f087c3364b2e296d:.github/workflows/ci.yml:generic-api-key:43
+fba4d244c7edd6066278319517cf8803e9e07f2a:.github/workflows/ci.yml:generic-api-key:33
+fba4d244c7edd6066278319517cf8803e9e07f2a:.github/workflows/ci.yml:generic-api-key:38
+fba4d244c7edd6066278319517cf8803e9e07f2a:.github/workflows/ci.yml:generic-api-key:43
+18512ef633a5d8a96a0da676c356a9514aa86a62:src/lib/auth.e2e.test.ts:generic-api-key:9

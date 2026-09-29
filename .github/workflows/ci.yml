@@ -16,6 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Generate throwaway auth secret
+        run: echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -27,20 +30,17 @@ jobs:
       - name: ESLint
         run: npm run lint
 
+      - name: Typecheck
+        run: npx tsc --noEmit
+
       - name: Unit tests
         run: npm test
-        env:
-          BETTER_AUTH_SECRET: "ci-test-secret-at-least-32-chars-long"
 
-      - name: Coverage gate
+      - name: Coverage gate (whole src, 100%)
         run: npm run test:coverage
-        env:
-          BETTER_AUTH_SECRET: "ci-test-secret-at-least-32-chars-long"
 
-      - name: Mutation
+      - name: Mutation (Stryker)
         run: npm run test:mutation
-        env:
-          BETTER_AUTH_SECRET: "ci-test-secret-at-least-32-chars-long"
 
       - name: Upload coverage report
         if: always()
@@ -59,3 +59,20 @@ jobs:
           path: reports/
           retention-days: 14
           if-no-files-found: warn
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required for GitHub Organizations; unused on personal accounts.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
