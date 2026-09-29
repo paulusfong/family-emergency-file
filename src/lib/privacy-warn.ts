@@ -11,6 +11,8 @@
  *   it because a heuristic can be wrong.
  */
 
+import { findPhoneNumbersInText, isValidPhoneNumber } from "libphonenumber-js/min";
+
 export type PrivacyLevel = "block" | "warn";
 export type PrivacyReason = "full_number" | "ssn" | "credential" | "secret_label" | "secret_token";
 export type PrivacyFinding = { level: PrivacyLevel; reason: PrivacyReason; message: string };
@@ -24,64 +26,137 @@ export const CREDENTIAL_ERROR =
 export const SECRET_WARNING =
   "This looks like a password, PIN, or other secret. Keep it in your password manager and write down where it lives instead.";
 
-/** Separators people put between digit groups: dash, dot, space, slash. */
-const SEP = "[-. /]";
-const SSN_RE = new RegExp(`(?<!\\d)\\d{3}${SEP}\\d{2}${SEP}\\d{4}(?!\\d)`);
-const DIGIT_RUN_RE = new RegExp(`\\d+(?:${SEP}\\d+)*`, "g");
-const SEP_RE = new RegExp(SEP);
-const LONG_RUN_RE = /\d{9,}/g;
-const YEAR_RE = /^(?:19|20)\d\d$/;
-/** E.164 allows up to 15 digits after the "+". */
-const MAX_INTL_DIGITS = 15;
+/*
+ * Full numbers. The text is normalized first (NFKC, so fullwidth digits become
+ * ASCII; zero-width characters removed; every decimal digit mapped to 0-9), and
+ * anything that is not a letter or a digit counts as a separator. A "run" is
+ * the digits joined across separators, so "4111 - 1111_1111\t1111" is one
+ * 16-digit run. Letters end a run.
+ */
+const ZERO_WIDTH_RE = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
+const DIGIT_RE = /\p{Nd}/gu;
+const RUN_RE = /[0-9](?:[^\p{L}0-9]*[0-9])*/gu;
+const NON_DIGIT_RE = /[^0-9]/g;
+const SSN_RE = /(?<![0-9])[0-9]{3}[^\p{L}0-9]+[0-9]{2}[^\p{L}0-9]+[0-9]{4}(?![0-9])/u;
+const MIN_BARE_RUN = 9;
+/** Luhn doubling of each digit, digit sum taken. */
+const LUHN_DOUBLED = [0, 2, 4, 6, 8, 1, 3, 5, 7, 9];
 
-/** 10 digits, or 11 starting with 1, reads as a phone number, not an account. */
-function isPhoneShaped(run: string) {
-  return run.length === 10 || (run.length === 11 && run.startsWith("1"));
+/* Well-formed tokens that may hold 9+ digits in text fields: removed before the run check. */
+const YEAR = "(?:19|20)[0-9]{2}";
+const MONTH = "(?:0?[1-9]|1[0-2])";
+const DAY = "(?:0?[1-9]|[12][0-9]|3[01])";
+const DATE_RE = new RegExp(
+  `(?<![0-9])(?:${YEAR}([-/.])${MONTH}\\1${DAY}|${MONTH}([-/.])${DAY}\\2${YEAR})(?![0-9])`,
+  "g",
+);
+const ZIP4_RE = /(?<![0-9])[0-9]{5}-[0-9]{4}(?![0-9])/g;
+/**
+ * Amounts with at most 12 whole-dollar digits: comma-grouped with cents
+ * (1,234,567,890.12) or after "$" ($123,456,789); up to 8 digits with cents
+ * (12345678.90) or after "$" ($950). A "$" before an amount with cents is
+ * simply a separator.
+ */
+const AMOUNT_RE =
+  /(?<![0-9,.])(?:\$[0-9]{1,3}(?:,[0-9]{3}){1,3}|[0-9]{1,3}(?:,[0-9]{3}){1,3}\.[0-9]{2}|[0-9]{1,8}\.[0-9]{2}|\$[0-9]{1,8})(?![0-9,]|\.[0-9])/g;
+/** Years listed with commas ("2019, 2021, 2024"), or five or more with spaces; four spaced years look like a card. */
+const YEAR_LIST_RE = new RegExp(`(?<![0-9])${YEAR}(?:(?:\\s*,\\s*${YEAR})+|(?:\\s+${YEAR}){4,})(?![0-9])`, "g");
+const MASK = " x ";
+
+/**
+ * The value (0-9) of a Unicode decimal digit. Each script's digits are ten
+ * consecutive code points starting at zero, and a few scripts sit back to
+ * back, so count from the start of the whole run of digit code points.
+ */
+function digitValue(ch: string) {
+  const cp = ch.codePointAt(0)!;
+  let start = cp;
+  while (/\p{Nd}/u.test(String.fromCodePoint(start - 1))) start--;
+  return (cp - start) % 10;
 }
 
-/** "+44 7700 900123" or "+4915123456789": an international phone number. */
-function isInternationalPhone(text: string, index: number, digitCount: number) {
-  return text[index - 1] === "+" && digitCount <= MAX_INTL_DIGITS;
+/** NFKC, zero-width characters removed, every decimal digit written 0-9. */
+export function normalizeForScan(text: string) {
+  return text
+    .normalize("NFKC")
+    .replace(ZERO_WIDTH_RE, "")
+    .replace(DIGIT_RE, (d) => String(digitValue(d)));
+}
+
+/** Digit strings of each run (digits joined across separators). */
+function digitRuns(text: string) {
+  return [...text.matchAll(RUN_RE)].map(([run]) => run.replace(NON_DIGIT_RE, ""));
+}
+
+/** A well-formed token is set aside unless its own digits make a Luhn-valid card number. */
+function holdsCard(token: string) {
+  return digitRuns(token).some(isLuhnCard);
+}
+
+function maskUnlessCard(token: string) {
+  return holdsCard(token) ? token : MASK;
+}
+
+/** Luhn: the check digit (last) brings the weighted sum of the rest to a multiple of 10. */
+export function passesLuhn(digits: string) {
+  let sum = 0;
+  for (let i = 1; i < digits.length; i++) {
+    const d = Number(digits[digits.length - 1 - i]);
+    sum += i % 2 === 1 ? LUHN_DOUBLED[d] : d;
+  }
+  return (sum + Number(digits.at(-1))) % 10 === 0;
+}
+
+function isLuhnCard(digits: string) {
+  return digits.length >= 13 && digits.length <= 19 && passesLuhn(digits);
 }
 
 /**
- * 10 or more digits written as groups joined by single dashes, dots, spaces,
- * or slashes, where every group but the last has at least 4 digits
- * ("0001 2345 6789", "4111/1111/1111/1111", 4-6-5 Amex). Phone numbers use
- * 3-digit groups, so phones (even two side by side) and dates do not match.
- * A list of years and a trailing ".dd" (cents) are not account numbers.
+ * A phone number written as one: valid for its country (US by default, via
+ * libphonenumber-js), with a separator between digit groups, and no bare run
+ * of 9+ digits. "(404) 555-0123", "+44 20 7946 0958"; not "4045550123".
  */
-function hasGroupedNumber(text: string) {
-  return [...text.matchAll(DIGIT_RUN_RE)].some((match) => {
-    const groups = match[0].replace(/\.\d\d$/, "").split(SEP_RE);
-    if (groups.every((g) => YEAR_RE.test(g))) return false;
-    if (isInternationalPhone(text, match.index, groups.join("").length)) return false;
-    return groups.some((_, start) => {
-      let digits = 0;
-      for (const group of groups.slice(start)) {
-        // A run of 10+ digits is judged on its own by the long-run rule.
-        if (group.length >= 10) return false;
-        digits += group.length;
-        if (digits >= 10) return true;
-        if (group.length < 4) return false;
-      }
-      return false;
-    });
-  });
+export function isFormattedPhone(value: string) {
+  return (
+    !new RegExp(`[0-9]{${MIN_BARE_RUN},}`).test(value) &&
+    /[0-9][^0-9]+[0-9]/.test(value) &&
+    isValidPhoneNumber(value, "US")
+  );
 }
 
-/** Full account, card, or SSN shapes. */
-export function findFullNumber(text: string): PrivacyReason | null {
-  if (SSN_RE.test(text)) return "ssn";
-  for (const match of text.matchAll(LONG_RUN_RE)) {
-    const run = match[0];
-    if (isPhoneShaped(run) || isInternationalPhone(text, match.index, run.length)) continue;
-    return run.length === 9 ? "ssn" : "full_number";
+/** Sets aside formatted phones, dates, ZIP+4s, amounts, and year lists so they do not join into a run. */
+function maskWellFormed(text: string) {
+  let out = text;
+  // Phones are overwritten with letters of the same length, so later offsets still line up.
+  for (const { startsAt, endsAt } of findPhoneNumbersInText(text, { defaultCountry: "US" })) {
+    const phone = text.slice(startsAt, endsAt);
+    if (isFormattedPhone(phone) && !holdsCard(phone)) {
+      out = out.slice(0, startsAt) + "x".repeat(phone.length) + out.slice(endsAt);
+    }
   }
-  return hasGroupedNumber(text) ? "full_number" : null;
+  for (const re of [DATE_RE, ZIP4_RE, AMOUNT_RE, YEAR_LIST_RE]) out = out.replace(re, maskUnlessCard);
+  return out;
 }
 
-/** True when text contains a full account, card, or Social Security number shape. */
+/**
+ * Full account, card, or SSN shapes, the same in every field (phone and
+ * email included), in order:
+ * 1. any 13-19 digit run that passes Luhn, with no exemptions;
+ * 2. an SSN layout (3-2-4 digits, any separators);
+ * 3. once well-formed tokens are set aside (formatted valid phones, dates,
+ *    ZIP+4s, amounts, year lists; none of them Luhn-valid), any run of 9+
+ *    digits. A phone written as a bare run ("4045550123") is not set aside.
+ */
+export function findFullNumber(raw: string): PrivacyReason | null {
+  const text = normalizeForScan(raw);
+  if (digitRuns(text).some(isLuhnCard)) return "full_number";
+  if (SSN_RE.test(text)) return "ssn";
+  const run = digitRuns(maskWellFormed(text)).find((d) => d.length >= MIN_BARE_RUN);
+  if (run === undefined) return null;
+  return run.length === MIN_BARE_RUN ? "ssn" : "full_number";
+}
+
+/** True when text (a free-text field) contains a full account, card, or SSN shape. */
 export function looksLikeFullNumber(text: string) {
   return findFullNumber(text) !== null;
 }
@@ -162,9 +237,10 @@ function hasSecretLabel(text: string) {
 }
 
 /** The strongest finding for a piece of free text, or null when it looks fine. */
-export function scanText(text: string): PrivacyFinding | null {
-  const full = findFullNumber(text);
+export function scanText(raw: string): PrivacyFinding | null {
+  const full = findFullNumber(raw);
   if (full) return { level: "block", reason: full, message: FULL_NUMBER_ERROR };
+  const text = normalizeForScan(raw);
   if (hasLabelledValue(CREDENTIAL_RE, text)) return { level: "block", reason: "credential", message: CREDENTIAL_ERROR };
   if (hasSecretLabel(text)) return { level: "warn", reason: "secret_label", message: SECRET_WARNING };
   if (text.split(/\s/).some(looksLikeSecretToken)) {

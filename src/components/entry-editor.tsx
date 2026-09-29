@@ -26,6 +26,9 @@ export const OFFLINE_STATUS = "You're offline. Changes will save when you reconn
 export const OFFLINE_MESSAGE =
   "You're offline, so changes aren't saved yet. They save when you reconnect, or press Retry.";
 
+/** Statuses where the latest edit is not on the server yet. */
+const UNSAVED_STATUSES = new Set<AutosaveState["status"]>(["pending", "saving", "error"]);
+
 const STATUS_TEXT: Record<AutosaveState["status"], string> = {
   idle: "Changes save automatically.",
   blocked: "",
@@ -57,9 +60,11 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
   const [state, setState] = useState<AutosaveState>({ status: entryId ? "saved" : "idle" });
   const sectionHref = `/app/sections/${sectionKey}`;
 
-  const [saver] = useState(() => {
+  const [{ saver, setMounted }] = useState(() => {
     let currentId = entryId;
-    return createAutosaver<Draft>({
+    // A save flushed on unmount may finish on the next page: leave its URL alone.
+    let mounted = false;
+    const saver = createAutosaver<Draft>({
       initial: draft,
       persisted: entryId !== null,
       canSave: (d) =>
@@ -70,16 +75,18 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
         const res = await save({ sectionKey, entryType: def.type, entryId: currentId, values: d.values });
         if (res.ok && currentId === null) {
           currentId = res.entryId;
-          window.history.replaceState(null, "", `${sectionHref}/entries/${res.entryId}`);
+          if (mounted) window.history.replaceState(null, "", `${sectionHref}/entries/${res.entryId}`);
         }
         return res;
       },
     });
+    return { saver, setMounted: (value: boolean) => void (mounted = value) };
   });
 
   const [offline, setOffline] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     saver.resume();
     const sync = () => setOffline(!window.navigator.onLine);
     const reconnect = () => {
@@ -92,9 +99,22 @@ export function EntryEditor({ sectionKey, def, entryId, initialValues, save, del
     return () => {
       window.removeEventListener("offline", sync);
       window.removeEventListener("online", reconnect);
+      setMounted(false);
       saver.dispose();
     };
-  }, [saver]);
+  }, [saver, setMounted]);
+
+  // Closing or reloading the tab with an edit not yet saved asks first.
+  const unsaved = UNSAVED_STATUSES.has(state.status);
+  useEffect(() => {
+    if (!unsaved) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsaved]);
 
   const update = (next: Draft) => {
     setDraft(next);
