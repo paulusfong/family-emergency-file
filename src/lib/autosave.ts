@@ -57,7 +57,8 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
 
   const emit = (state: AutosaveState) => {
     if (disposed) return;
-    failed = state.status === "error" ? state.error : undefined;
+    // Only error states carry an error, so any other state clears it.
+    failed = state.error;
     onState(state);
   };
 
