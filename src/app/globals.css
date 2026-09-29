@@ -337,15 +337,20 @@ button.secondary,
   border-color: var(--danger);
 }
 
+/* In normal flow, after the last field. A sticky row covered whichever field
+   sat at the bottom of a short (390px-wide phone) viewport. */
 .form-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem 1rem;
-  position: sticky;
-  bottom: 0;
-  background: white;
   padding: 0.75rem 0;
+}
+
+/* The toast is fixed to the bottom of the screen; leave room to scroll the
+   last field and the actions clear of it. */
+.entry-form.has-toast {
+  padding-bottom: 6.5rem;
 }
 
 .save-status {
