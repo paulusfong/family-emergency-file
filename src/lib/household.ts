@@ -1,7 +1,8 @@
-import { asc, count, eq, sql } from "drizzle-orm";
+import { and, asc, count, eq, isNull, sql } from "drizzle-orm";
 import { db } from "./db";
 import { id } from "./ids";
-import { checklistItems, householdFiles, SECTION_DEFS, sections } from "./schema";
+import { checklistItems, householdFiles, SECTION_DEFS, sections, type SectionStatus } from "./schema";
+import { sectionStatus, type SectionCounts } from "./progress";
 import { CHECKLIST_SEED_TOTAL, checklistSeedRows } from "./sections";
 
 async function findFile(userId: string) {
@@ -113,9 +114,40 @@ export async function listSections(householdFileId: string) {
     .orderBy(asc(sections.sortOrder));
 }
 
-/** Progress percent from section statuses (0 when all not_started). */
-export function progressPercent(rows: { status: string }[]): number {
-  if (rows.length === 0) return 0;
-  const complete = rows.filter((r) => r.status === "complete").length;
-  return Math.round((complete / rows.length) * 100);
+export type SectionProgress = {
+  id: string;
+  sectionKey: string;
+  title: string;
+  status: SectionStatus;
+} & SectionCounts;
+
+/**
+ * Every section of the file with its checklist and entry counts and the
+ * derived status, in one query. Status is computed on read, never stored, so
+ * it cannot drift from the checklist and entries it is based on.
+ */
+export async function listSectionProgress(householdFileId: string): Promise<SectionProgress[]> {
+  const rows = await db
+    .select({
+      id: sections.id,
+      sectionKey: sections.sectionKey,
+      title: sections.title,
+      // Correlated subqueries use explicit aliases: drizzle renders column
+      // refs in select fields unqualified, which would bind to the inner table.
+      items: sql<number>`(select count(*) from checklist_items ci where ci.section_id = "sections"."id")`.mapWith(Number),
+      resolved: sql<number>`(select count(*) from checklist_items ci where ci.section_id = "sections"."id" and ci.status <> 'open')`.mapWith(Number),
+      entries: sql<number>`(select count(*) from entries e where e.section_id = "sections"."id")`.mapWith(Number),
+    })
+    .from(sections)
+    .where(eq(sections.householdFileId, householdFileId))
+    .orderBy(asc(sections.sortOrder));
+  return rows.map((r) => ({ ...r, status: sectionStatus(r) }));
+}
+
+/** Record that the owner dismissed the first-run privacy sheet (idempotent). */
+export async function acknowledgePrivacy(householdFileId: string, at = new Date()) {
+  await db
+    .update(householdFiles)
+    .set({ privacyAckAt: at })
+    .where(and(eq(householdFiles.id, householdFileId), isNull(householdFiles.privacyAckAt)));
 }

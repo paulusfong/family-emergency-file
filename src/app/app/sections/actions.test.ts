@@ -116,7 +116,13 @@ describe("sections: pages, entry CRUD, checklist, ownership", async () => {
   describe("section page", () => {
     it("shows S3's seeded checklist, an empty entry list, and add links", async () => {
       const out = await html(section("S3"));
-      assert.match(out, /<h1>S3 Banking &amp; cash<\/h1>/);
+      assert.match(out, /<h1>S3 Banking &amp; cash<\/h1><span class="chip chip-not_started">Not started<\/span>/);
+      assert.match(out, /<p class="section-meta">0 of 5 checklist items handled<\/p>/);
+      assert.match(
+        out,
+        /<strong>Why this matters:<\/strong> Where the cash is, so bills keep getting paid while things are sorted out\./,
+      );
+      assert.doesNotMatch(out, /privacy-note/);
       assert.match(out, /Checking and savings accounts/);
       assert.match(out, /Safe deposit box or home safe/);
       assert.match(out, /No entries yet/);
@@ -126,6 +132,20 @@ describe("sections: pages, entry CRUD, checklist, ownership", async () => {
       assert.doesNotMatch(out, /Entry deleted/);
       assert.doesNotMatch(out, /class="checklist-label">[^<]+<\/span><span class="badge">/);
       assert.equal((out.match(/Mark &quot;/g) ?? []).length, 5);
+    });
+
+    it("S10 leads with access plans and a standing password-manager note", async () => {
+      const out = await html(section("S10"));
+      assert.match(out, /<p class="privacy-note">Keep the passwords themselves in a password manager\./);
+      assert.match(out, /href="\/app\/sections\/S10\/entries\/new\?type=access_plan" class="btn">Add access plan</);
+      assert.match(out, /without you writing down a single password/);
+    });
+
+    it("drops the empty state once there is an entry", async () => {
+      await actions.saveEntry({ sectionKey: "S11", entryType: "note", entryId: null, values: { label: "Where the will is" } });
+      const out = await html(section("S11"));
+      assert.doesNotMatch(out, /Why this matters/);
+      assert.match(out, /chip chip-in_progress">In progress</);
     });
 
     it("renders every section with no password inputs", async () => {
@@ -373,6 +393,20 @@ describe("sections: pages, entry CRUD, checklist, ownership", async () => {
       const reopened = await html(section("S3"));
       assert.doesNotMatch(reopened, /<span class="badge">(Done|Skipped)<\/span>/);
       assert.match(reopened, /Mark &quot;Checking and savings accounts&quot; done/);
+    });
+
+    it("marks the section complete once every item is Done or Skipped", async () => {
+      const s4 = (await data.findSection(aliceFile, "S4"))!;
+      const items = await data.listChecklist(s4.id);
+      for (const [i, item] of items.entries()) {
+        await actions.setChecklistItem(
+          form({ sectionKey: "S4", itemId: item.id, status: i === 0 ? "skipped" : "done" }),
+        );
+        const out = await html(section("S4"));
+        const expected = i === items.length - 1 ? "Complete" : "In progress";
+        assert.match(out, new RegExp(`<span class="chip chip-[a-z_]+">${expected}</span>`), `after ${i + 1}`);
+        assert.match(out, new RegExp(`${i + 1} of ${items.length} checklist items handled`));
+      }
     });
 
     it("404s bad statuses, unknown items, and unknown sections", async () => {

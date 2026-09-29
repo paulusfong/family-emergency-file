@@ -179,34 +179,88 @@ describe("app coverage", async () => {
     assert.match(html, /Continue to dashboard/);
   });
 
-  it("renders dashboard at 0% with twelve sections", async () => {
+  it("renders dashboard at 0% with twelve not-started chips and the privacy sheet", async () => {
     resetHarness();
     sessionUser = fakeUser;
     const { default: Dash } = await import("@/app/app/page");
     const html = await renderElement(await Dash());
-    assert.match(html, /0%/);
-    assert.match(html, /nothing filled in yet/);
-    assert.match(html, /S1/);
-    assert.match(html, /S12/);
+    assert.match(html, /<strong>0%<\/strong> complete/);
+    assert.match(html, /0 of 12 sections complete<\/p>/);
+    assert.match(html, /role="progressbar" aria-label="Overall progress" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-valuetext="0% — 0 of 12 sections complete"/);
+    assert.match(html, /style="width:0%"/);
+    assert.match(html, /A section is complete once every checklist item is marked Done or Skip/);
+    assert.equal(html.match(/class="chip chip-not_started">Not started</g)?.length, 12);
+    assert.match(html, /<strong>S1<\/strong> Household snapshot<\/span><span class="section-meta">0\/5 checklist · 0 entries/);
+    assert.match(html, /href="\/app\/sections\/S12"/);
+    assert.match(html, /id="privacy-sheet-title">Access plans, never passwords/);
+    assert.match(html, /Never the password,\s+PIN, or security answers/);
+    assert.match(html, /Got it<\/button>/);
+    assert.doesNotMatch(html, /type="password"/);
     assert.ok(fileId);
   });
 
-  it("dashboard drops the empty-state copy once a section is complete", async () => {
+  it("dashboard rolls checklist and entries into chips and the percent", async () => {
     resetHarness();
     sessionUser = fakeUser;
-    const { eq, and } = await import("drizzle-orm");
-    await db
-      .update(schema.sections)
-      .set({ status: "complete" })
-      .where(and(eq(schema.sections.householdFileId, fileId), eq(schema.sections.sectionKey, "S1")));
+    const { eq, and, inArray } = await import("drizzle-orm");
+    const secs = await db.select().from(schema.sections).where(eq(schema.sections.householdFileId, fileId));
+    const byKey = Object.fromEntries(secs.map((s) => [s.sectionKey, s.id]));
+    await db.update(schema.checklistItems).set({ status: "done" }).where(eq(schema.checklistItems.sectionId, byKey.S1));
+    const entryId = id();
+    const now = new Date();
+    await db.insert(schema.entries).values({
+      id: entryId,
+      sectionId: byKey.S3,
+      entryType: "account",
+      label: "Joint checking",
+      createdAt: now,
+      updatedAt: now,
+    });
+    try {
+      const { default: Dash } = await import("@/app/app/page");
+      const html = await renderElement(await Dash());
+      assert.match(html, /<strong>8%<\/strong> complete/);
+      assert.match(html, /1 of 12 sections complete · 1 in progress<\/p>/);
+      assert.match(html, /aria-valuenow="8"/);
+      assert.match(html, /aria-valuetext="8% — 1 of 12 sections complete"/);
+      assert.match(html, /style="width:8%"/);
+      assert.doesNotMatch(html, /A section is complete once/);
+      assert.match(html, /Household snapshot<\/span><span class="section-meta">5\/5 checklist · 0 entries<\/span><\/span><span class="chip chip-complete">Complete</);
+      assert.match(html, /Banking &amp; cash<\/span><span class="section-meta">0\/5 checklist · 1 entry<\/span><\/span><span class="chip chip-in_progress">In progress</);
+      assert.equal(html.match(/chip-not_started/g)?.length, 10);
+    } finally {
+      await db.delete(schema.entries).where(eq(schema.entries.id, entryId));
+      await db
+        .update(schema.checklistItems)
+        .set({ status: "open" })
+        .where(and(inArray(schema.checklistItems.sectionId, [byKey.S1]), eq(schema.checklistItems.status, "done")));
+    }
+  });
+
+  it("dismissPrivacySheet stamps the owner's file, revalidates, and hides the sheet", async () => {
+    resetHarness();
+    sessionUser = fakeUser;
+    const { eq } = await import("drizzle-orm");
+    const { dismissPrivacySheet } = await import("@/app/app/actions");
+    await dismissPrivacySheet();
+    const { revalidated } = await import("../test/next-harness");
+    assert.deepEqual(revalidated, ["/app"]);
+    const [file] = await db.select().from(schema.householdFiles).where(eq(schema.householdFiles.id, fileId));
+    assert.ok(file.privacyAckAt instanceof Date);
     const { default: Dash } = await import("@/app/app/page");
     const html = await renderElement(await Dash());
-    assert.match(html, /8%/);
-    assert.doesNotMatch(html, /nothing filled in yet/);
-    await db
-      .update(schema.sections)
-      .set({ status: "not_started" })
-      .where(and(eq(schema.sections.householdFileId, fileId), eq(schema.sections.sectionKey, "S1")));
+    assert.doesNotMatch(html, /privacy-sheet-title/);
+    assert.match(html, /<strong>0%<\/strong> complete/);
+  });
+
+  it("dismissPrivacySheet requires a signed-in owner", async () => {
+    resetHarness();
+    sessionUser = null;
+    const { dismissPrivacySheet } = await import("@/app/app/actions");
+    await assert.rejects(() => dismissPrivacySheet(), NextRedirect);
+    const { revalidated } = await import("../test/next-harness");
+    assert.deepEqual(revalidated, []);
+    sessionUser = fakeUser;
   });
 
   it("renders settings stub", async () => {
