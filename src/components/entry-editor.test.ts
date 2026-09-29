@@ -12,7 +12,7 @@ describe("EntryEditor", async () => {
   const { act, cleanup, fireEvent, render, screen } = await import("@testing-library/react");
   const { EntryEditor } = await import("./entry-editor");
   const { ENTRY_TYPE_DEFS } = await import("@/lib/entry-fields");
-  const { NETWORK_ERROR } = await import("@/lib/autosave");
+  const { NETWORK_ERROR, SERVER_ERROR } = await import("@/lib/autosave");
   const { LostSaveNotice } = await import("./lost-save-notice");
   const { dismissLostSave, getLostSave } = await import("@/lib/lost-save");
   type Save = Parameters<typeof EntryEditor>[0]["save"];
@@ -300,6 +300,21 @@ describe("EntryEditor", async () => {
       assert.equal(screen.queryAllByRole("link").length, 0);
       fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
       assert.equal(notice(), "");
+    });
+
+    it("shows a save that had already failed when the person leaves (Done after a failed blur save)", async () => {
+      const { calls, save } = recorder(() => Promise.reject(new Error("An unexpected response was received from the server.")));
+      render(React.createElement(LostSaveNotice));
+      const view = mount({ type: "contact", save, entryId: "c-9", initialValues: { label: "Pat" } });
+      fireEvent.change(screen.getByLabelText("Relationship"), { target: { value: "Sister" } });
+      await wait(20);
+      assert.equal(calls.length, 1);
+      // The editor's own toast shows the failure while it is open.
+      assert.match(screen.getAllByRole("alert").map((a) => a.textContent).join(" "), new RegExp(SERVER_ERROR.slice(0, 30)));
+      view.unmount();
+      await wait(20);
+      assert.equal(calls.length, 1);
+      assert.equal(notice(), `Your last change to “Pat” wasn't saved. ${SERVER_ERROR}Open it againDismiss`);
     });
 
     it("shows nothing when the flush on unmount succeeds", async () => {

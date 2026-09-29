@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { NETWORK_ERROR, createAutosaver, type AutosaveState, type SaveOutcome } from "./autosave";
+import { NETWORK_ERROR, SERVER_ERROR, createAutosaver, type AutosaveState, type SaveOutcome } from "./autosave";
 
 type V = { label: string };
 
@@ -165,6 +165,20 @@ describe("createAutosaver", () => {
     assert.match(NETWORK_ERROR, /aren't saved yet/);
   });
 
+  it("turns any other thrown save (an HTTP 500) into a server error", async () => {
+    const { saver, states } = setup({
+      save: async () => {
+        throw new Error("An unexpected response was received from the server.");
+      },
+    });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    assert.deepEqual(states.at(-1), { status: "error", error: SERVER_ERROR, fieldErrors: undefined });
+    assert.notEqual(SERVER_ERROR, NETWORK_ERROR);
+    assert.match(SERVER_ERROR, /server.*aren't saved yet/);
+    assert.doesNotMatch(SERVER_ERROR, /reach/);
+  });
+
   it("reports server-side validation errors", async () => {
     const { saver, states } = setup({
       save: async () => ({ ok: false, error: "Fix it", fieldErrors: { last4: "bad" } }),
@@ -278,9 +292,9 @@ describe("createAutosaver", () => {
     assert.equal(states.length, before);
   });
 
-  it("does not retry a failed save on dispose", async () => {
+  it("reports a save that had already failed to onLost on dispose, without retrying it", async () => {
     let calls = 0;
-    const { saver, lost } = setup({
+    const { saver, lost, states } = setup({
       save: async () => {
         calls++;
         return { ok: false, error: "rejected" };
@@ -288,11 +302,60 @@ describe("createAutosaver", () => {
     });
     saver.schedule({ label: "x" });
     await saver.flush();
-    saver.dispose();
-    await Promise.resolve();
-    assert.equal(calls, 1);
-    // It failed while the editor could still show it, so it is not lost.
+    assert.equal(states.at(-1)!.status, "error");
     assert.deepEqual(lost, []);
+    // A blur's save failed, then the person clicked Done: the edit is lost unless reported.
+    saver.dispose();
+    await tick();
+    assert.equal(calls, 1);
+    assert.deepEqual(lost, [["rejected", { label: "x" }]]);
+  });
+
+  it("does not report on dispose once a failed save has been fixed", async () => {
+    let fail = true;
+    const { saver, lost } = setup({ save: async () => (fail ? { ok: false, error: "rejected" } : { ok: true }) });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    fail = false;
+    await saver.flush();
+    saver.dispose();
+    await tick();
+    assert.deepEqual(lost, []);
+  });
+
+  it("sends a new edit after a failed save on dispose and reports only its outcome", async () => {
+    let fail = true;
+    const { saver, lost, saves } = setup({ save: async () => (fail ? { ok: false, error: "rejected" } : { ok: true }) });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    fail = false;
+    saver.schedule({ label: "xy" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }, { label: "xy" }]);
+    assert.deepEqual(lost, []);
+  });
+
+  it("does not report on dispose when the last state is blocked, not an error", async () => {
+    const { saver, lost } = setup({
+      save: async () => ({ ok: false, error: "rejected" }),
+      canSave: (v) => !v.label.includes("secret"),
+    });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    saver.schedule({ label: "x secret" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(lost, []);
+  });
+
+  it("works without onLost when a failed save is disposed", async () => {
+    const { saver, saves } = setup({ noOnLost: true, save: async () => ({ ok: false, error: "rejected" }) });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }]);
   });
 
   it("reports a flush on dispose that is rejected to onLost, without emitting", async () => {
