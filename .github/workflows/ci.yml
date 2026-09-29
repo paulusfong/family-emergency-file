@@ -140,7 +140,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "$SHARD_TESTS" ]; then
-            export STRYKER_TEST_COMMAND="$TEST_CMD $SHARD_TESTS"
+            # Two stages: tests that import a mutated module directly run first,
+            # and the rest of the shard's tests only if those pass. Most mutants
+            # die in the first stage in seconds; a survivor still runs every test.
+            # The heap cap from stryker.config.mjs prefixes only the first
+            # command, so the second repeats it.
+            MODULES=$(tr ',' '\n' <<<"$STRYKER_MUTATE" | sed -E 's#.*/##; s#\.tsx?$##' | paste -sd'|')
+            FIRST=$(grep -lE "[\"'][^\"']*/(${MODULES})[\"']" $SHARD_TESTS || true)
+            REST=$(for t in $SHARD_TESTS; do grep -qxF "$t" <<<"$FIRST" || echo "$t"; done)
+            if [ -z "$FIRST" ] || [ -z "$REST" ]; then
+              export STRYKER_TEST_COMMAND="$TEST_CMD $SHARD_TESTS"
+            else
+              export STRYKER_TEST_COMMAND="$TEST_CMD $(echo $FIRST) && NODE_OPTIONS=--max-old-space-size=512 $TEST_CMD $(echo $REST)"
+            fi
           fi
           echo "Mode: ${{ needs.plan.outputs.mode }}"
           echo "Stryker mutate: $STRYKER_MUTATE"
