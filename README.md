@@ -59,11 +59,11 @@ See `.env.example`. Key vars: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `DATABASE
 - better-auth: `user`, `session`, `account`, `verification`
 - `household_files`: one per user
 - `sections`: twelve slots S1–S12, status `not_started|in_progress|complete`
-- `checklist_items`: starter items per section (Clark-aligned, `src/lib/sections.ts`), status `open|done|skipped`
+- `checklist_items`: 65 starter items across S1–S12 (5, 8, 5, 4, 6, 6, 4, 6, 4, 6, 7, 4; Clark-aligned, `src/lib/sections.ts`), status `open|done|skipped`
 - `entries`: `contact|account|policy|document_location|note`, label plus metadata JSON validated by `src/lib/entry-fields.ts`
 
 On first successful session, `ensureHouseholdFile` creates exactly one file and seeds the twelve sections and their checklist items in one atomic batch. The same batch backfills files created before a section or item existed.
 
-Entries hold pointers and metadata only: institution, last 4 digits at most, where to find it, an access plan, and who to call. There is no password, PIN, or full-number field, and the server rejects text that looks like a full account, card, or SSN number. Every read and write is scoped to a section inside the signed-in user's own file, so another user's ids 404.
+Entries hold pointers and metadata only: institution, last 4 digits at most, where to find it, an access plan, and who to call. There is no password, PIN, or full-number field. In every field (phone and email included) the server rejects text shaped like a full account, card, or SSN number (with dash, dot, space, or slash separators) and any value written after a credential label such as `password:` or `PIN=`. Every read and write is scoped to a section inside the signed-in user's own file, so another user's ids 404.
 
-`/app/sections/[key]` lists the checklist and entries; `/app/sections/[key]/entries/new?type=…` and `/app/sections/[key]/entries/[id]` autosave (debounced, serialized) and show an error toast with Retry when a save fails.
+`/app/sections/[key]` lists the checklist and entries; `/app/sections/[key]/entries/new?type=…` and `/app/sections/[key]/entries/[id]` autosave (debounced, serialized) and show an error toast with Retry when a save is rejected or fails, and an offline toast with Retry while the browser is offline; the status never reads "All changes saved." in either case.

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
 import { ENTRY_TYPES, SECTION_DEFS } from "./schema";
 import {
@@ -22,6 +24,15 @@ describe("section seed", () => {
         assert.doesNotMatch(item.label, /\b(enter|type) your (password|pin)\b/i);
       }
     }
+  });
+
+  it("QA-3: seeds 65 items, the count and split the README states", () => {
+    const counts = SECTION_DEFS.map((d) => SECTION_CHECKLISTS[d.key].length);
+    assert.deepEqual(counts, [5, 8, 5, 4, 6, 6, 4, 6, 4, 6, 7, 4]);
+    assert.equal(CHECKLIST_SEED_TOTAL, 65);
+    assert.equal(checklistSeedRows().length, 65);
+    const readme = fs.readFileSync(path.resolve("README.md"), "utf8");
+    assert.match(readme, new RegExp(`${CHECKLIST_SEED_TOTAL} starter items across S1–S12 \\(${counts.join(", ")};`));
   });
 
   it("covers the Clark checklist staples", () => {
