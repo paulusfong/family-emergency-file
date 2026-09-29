@@ -57,13 +57,34 @@ See `.env.example`. Key vars: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `DATABASE
 ## Domain
 
 - better-auth: `user`, `session`, `account`, `verification`
-- `household_files`: one per user
-- `sections`: twelve slots S1–S12, status `not_started|in_progress|complete`
-- `checklist_items`: 65 starter items across S1–S12 (5, 8, 5, 4, 6, 6, 4, 6, 4, 6, 7, 4; Clark-aligned, `src/lib/sections.ts`), status `open|done|skipped`
-- `entries`: `contact|account|policy|document_location|note`, label plus metadata JSON validated by `src/lib/entry-fields.ts`
+- `household_files`: one per user; `privacy_ack_at` records when the first-run privacy sheet was dismissed
+- `sections`: twelve slots S1–S12 (the stored `status` column is unused; status is derived, see Progress)
+- `checklist_items`: starter items per section (Clark-aligned, `src/lib/sections.ts`), status `open|done|skipped`
+- `entries`: `contact|account|policy|document_location|access_plan|note`, label plus metadata JSON validated by `src/lib/entry-fields.ts`
 
 On first successful session, `ensureHouseholdFile` creates exactly one file and seeds the twelve sections and their checklist items in one atomic batch. The same batch backfills files created before a section or item existed.
 
-Entries hold pointers and metadata only: institution, last 4 digits at most, where to find it, an access plan, and who to call. There is no password, PIN, or full-number field. In every field (phone and email included) the server rejects text shaped like a full account, card, or SSN number (with dash, dot, space, or slash separators) and any value written after a credential label such as `password:` or `PIN=`. Every read and write is scoped to a section inside the signed-in user's own file, so another user's ids 404.
+Entries hold pointers and metadata only: institution, last 4 digits at most, where to find it, an access plan, and who to call. There is no password, PIN, or full-number field. S10's primary entry type is `access_plan` (provider, where the login lives, recovery and emergency access, who to call), and nothing in it asks for a credential. Every read and write is scoped to a section inside the signed-in user's own file, so another user's ids 404.
 
-`/app/sections/[key]` lists the checklist and entries; `/app/sections/[key]/entries/new?type=…` and `/app/sections/[key]/entries/[id]` autosave (debounced, serialized) and show an error toast with Retry when a save is rejected or fails, and an offline toast with Retry while the browser is offline; the status never reads "All changes saved." in either case.
+`/app/sections/[key]` lists the checklist and entries; `/app/sections/[key]/entries/new?type=…` and `/app/sections/[key]/entries/[id]` autosave (debounced, serialized) and show an error toast with Retry when a save fails.
+
+## Progress
+
+`src/lib/progress.ts` derives status at read time from `listSectionProgress` (one query):
+
+- **complete**: the section has checklist items and every one is Done or Skip.
+- **in progress**: at least one item is Done or Skip, or the section has an entry.
+- **not started**: otherwise. Entries alone never complete a section.
+
+The dashboard shows `round(complete / 12 × 100)%` in a `role="progressbar"` with `aria-valuenow`, `aria-valuemin`, `aria-valuemax`, and `aria-valuetext`, and a status chip on each section.
+
+## Privacy rules
+
+On the first dashboard visit a non-modal "Access plans, never passwords" sheet explains what belongs in the file. "Got it" posts `dismissPrivacySheet`, which sets `privacy_ack_at` once, so the sheet stays dismissed on every device.
+
+`src/lib/privacy-warn.ts` is shared by the editor and the server:
+
+- **Block** (`findFullNumber`): SSN-shaped `ddd-dd-dddd` or `ddd dd dddd`; digit runs of 9+ unless phone-shaped (10 digits, or 11 starting with 1); and 13–19 digits written in groups of 4+ (cards, account numbers). The editor shows the error and does not save. `validateEntry` rejects the same text, so a direct POST cannot store it.
+- **Warn** (`looksLikeSecretToken` and label rules): a single token of 8+ characters with a letter and a digit plus mixed case or a symbol and at least 2.5 bits of entropy per character, or 20+ characters at 3.5; `password:` / `pin=` / `passcode #` style labels followed by a value (not a pointer like "in the vault"); `pin 1234`, `cvv 123`; and `password is "…"`. Emails, URLs, and domains are skipped. The editor holds the save and offers "It’s not a secret, save it" for that exact value. The server does not block warnings, because the heuristic can be wrong.
+
+Last-4, email, and phone fields are validated by their own rules and not scanned.
