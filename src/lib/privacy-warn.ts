@@ -53,6 +53,7 @@ const runRe = (sep: string) => new RegExp(`[0-9](?:(?:${sep})*[0-9])*`, "giu");
 const RUN_RE = runRe(SEP);
 const LOOSE_RUN_RE = runRe(LOOSE_SEP);
 const NON_DIGIT_RE = /[^0-9]/g;
+const COUNTRY_CODE_ONE_RE = /^1[^0-9]/;
 const SSN_RE = new RegExp(`(?<![0-9])[0-9]{3}(?:${LOOSE_SEP})+[0-9]{2}(?:${LOOSE_SEP})+[0-9]{4}(?![0-9])`, "iu");
 const MIN_BARE_RUN = 9;
 /** Luhn doubling of each digit, digit sum taken. */
@@ -77,8 +78,13 @@ const AMOUNT_RE =
   /(?<![0-9,.])(?:\$[0-9]{1,3}(?:,[0-9]{3}){1,3}|[0-9]{1,3}(?:,[0-9]{3}){1,3}\.[0-9]{2}|[0-9]{1,8}\.[0-9]{2}|\$[0-9]{1,8})(?![0-9,]|\.[0-9])/g;
 /** Years listed with commas ("2019, 2021, 2024"), or five or more with spaces; four spaced years look like a card. */
 const YEAR_LIST_RE = new RegExp(`(?<![0-9])${YEAR}(?:(?:\\s*,\\s*${YEAR})+|(?:\\s+${YEAR}){4,})(?![0-9])`, "g");
-/** A VIN shape: 17 letters and digits, no I, O, or Q, with at least one letter (17 bare digits stay blocked). */
-const VIN_RE = /(?<![\p{L}0-9])(?=[0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}(?![\p{L}0-9])/giu;
+/**
+ * A VIN shape: 17 letters and digits, no I, O, or Q, with at least two letters
+ * (one letter on a 16-digit number is not enough: "3360585837343724R").
+ */
+const VIN_RE = /(?<![\p{L}0-9])(?=(?:[0-9]*[A-HJ-NPR-Z]){2})[A-HJ-NPR-Z0-9]{17}(?![\p{L}0-9])/giu;
+/** 9+ digits in a row starting before position 9 (the check digit): an SSN or account number, not a VIN. */
+const VIN_EARLY_RUN_RE = /^[A-Z0-9]{0,7}[0-9]{9}/i;
 /** ISO 3779 transliteration: a character's value is its index here, mod 10 (A=1 ... H=8, J=1 ... R=9, S=2 ... Z=9). */
 const VIN_VALUES = "0123456789.ABCDEFGH..JKLMN.P.R..STUVWXYZ";
 const VIN_WEIGHTS = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
@@ -111,9 +117,15 @@ function digitRuns(text: string, re = RUN_RE) {
   return [...text.matchAll(re)].map(([run]) => run.replace(NON_DIGIT_RE, ""));
 }
 
-/** True when a loose run (single letters count as separators) is a Luhn-valid card number. */
+/**
+ * True when a loose run (single letters count as separators) is a Luhn-valid
+ * card number, with or without a leading country code "1" written on its own.
+ */
 function holdsCard(text: string) {
-  return digitRuns(text, LOOSE_RUN_RE).some(isLuhnCard);
+  return [...text.matchAll(LOOSE_RUN_RE)].some(([run]) => {
+    const digits = run.replace(NON_DIGIT_RE, "");
+    return isLuhnCard(digits) || (COUNTRY_CODE_ONE_RE.test(run) && isLuhnCard(digits.slice(1)));
+  });
 }
 
 function maskUnlessCard(token: string) {
@@ -129,9 +141,13 @@ export function hasVinCheckDigit(vin: string) {
   return chars[8] === (check === 10 ? "X" : String(check));
 }
 
-/** A VIN-shaped token is set aside only when its check digit validates; otherwise its digits count as usual. */
+/**
+ * A VIN-shaped token is set aside only when its check digit validates and no
+ * run of 9+ digits starts before position 9 ("123456787ABCDEFGH" has a valid
+ * check digit but opens with an SSN); otherwise its digits count as usual.
+ */
 function maskVin(token: string) {
-  return hasVinCheckDigit(token) ? maskUnlessCard(token) : token;
+  return hasVinCheckDigit(token) && !VIN_EARLY_RUN_RE.test(token) ? maskUnlessCard(token) : token;
 }
 
 /** Luhn: the check digit (last) brings the weighted sum of the rest to a multiple of 10. */
@@ -161,22 +177,143 @@ export function isFormattedPhone(value: string) {
   );
 }
 
-/**
- * Sets aside formatted phones, dates, ZIP+4s, amounts, year lists, and VINs so
- * they do not join into a run. A phone is not set aside when its national
- * number and extension, joined, pass Luhn ("+1 404 683 5510 extension
- * 373597"); its 10+ digits then count as a run.
+/*
+ * Phones. A formatted valid phone is set aside for every check, the Luhn check
+ * included, so digits written next to it ("Atlanta GA 30301 (404) 683-5510",
+ * "(404) 555-0147 ext. 204") do not join into a card number. What it could hide
+ * is checked on purpose. The phone's digits (its national number, and its
+ * digits as typed without the extension: "+1 404..." with the country code,
+ * "0114 9344 1306 6245" with the 011 that makes it a call to +49) are tried
+ * alone and joined to
+ * - a tail: the next digit group after it (its extension, if it has one),
+ *   across extension markers and separators only ("x", "ext.", "no.", "/",
+ *   ","), within 16 characters;
+ * - a head: the digit group just before it, across 1-3 separators and no
+ *   letters.
+ * A join counts when the tail alone has 5+ digits, or the join adds 6+ in all
+ * (real extensions are shorter, and a ZIP before a phone is 5); a short
+ * extension after a marker never joins the head. Neither may sit inside
+ * another set-aside token (a phone, date, ZIP+4, amount, or year list), and a
+ * tail followed by a word with no marker before it is a street number
+ * ("(404) 683-5510, 12045 Main St"), not an extension. If any of these is a 13-19 digit Luhn-valid number,
+ * the text is blocked.
  */
-function maskWellFormed(text: string) {
-  let out = text;
-  // Phones are overwritten with letters of the same length, so later offsets still line up.
+const EXT_WORDS = "x|ext|extn|extensi[oó]n|ex|no|nr|num|number|anexo|ramal|int|interno|poste|durchwahl|доб";
+/* Both match at index 0, possibly empty, so they need no anchor. */
+const JOIN_GAP_RE = new RegExp(`(?:[^\\p{L}0-9]|(?:${EXT_WORDS})(?!\\p{L}))*`, "iu");
+const MAX_JOIN_GAP = 16;
+const LEADING_GROUP_RE = /[0-9]*/;
+const STREET_NAME_RE = /^\s+\p{L}{2}/u;
+const EXT_MARK_RE = /[\p{L}#]/u;
+const TRAILING_GROUP_RE = /([0-9]+)[^\p{L}0-9]{1,3}$/u;
+const MIN_TAIL = 5;
+const MIN_ADDED_DIGITS = 6;
+
+/**
+ * A North American number written as one ("(404) 683-5510", "+1 404.683.5510").
+ * libphonenumber reads a phone together with digits next to it
+ * ("4/23/2013 - (770) 547-4454", "(305) 945-6967 7674 Ponce de Leon Blvd") and
+ * then finds none, so these are also looked for on their own.
+ */
+const NANP_RE = /(?<![0-9+])(?:\+?1[ .-]?)?(?:\([2-9][0-9]{2}\) ?|[2-9][0-9]{2}[ .-]?)[2-9][0-9]{2}[ .-][0-9]{4}(?![0-9])/g;
+
+const NANP_LENGTH = 10;
+
+type FoundPhone = { startsAt: number; endsAt: number; nationalNumber: string };
+
+/**
+ * The phones set aside, each up to its last digit before any extension (the
+ * extension is then a tail like any other): formatted valid numbers
+ * libphonenumber finds, plus North American numbers found on their own (one
+ * found twice is harmless: it is masked twice and checked twice). A
+ * seven-digit local number ("310-8304") is not one: it cannot make a long run
+ * on its own, and setting it aside would split the digits around it.
+ */
+function findPhones(text: string): FoundPhone[] {
+  const phones: FoundPhone[] = [];
   for (const { startsAt, endsAt, number } of findPhoneNumbersInText(text, { defaultCountry: "US" })) {
     const phone = text.slice(startsAt, endsAt);
-    const joined = [number.nationalNumber, number.ext].join("");
-    if (isFormattedPhone(phone) && !holdsCard(phone) && !isLuhnCard(joined)) {
-      out = out.slice(0, startsAt) + "Z".repeat(phone.length) + out.slice(endsAt);
-    }
+    if (!isFormattedPhone(phone) || (number.countryCallingCode === "1" && number.nationalNumber.length < NANP_LENGTH)) continue;
+    const typed = phone.replace(NON_DIGIT_RE, "").length - (number.ext ?? "").length;
+    const core = new RegExp(`(?:[^0-9]*[0-9]){${typed}}`).exec(phone)![0];
+    phones.push({ startsAt, endsAt: startsAt + core.length, nationalNumber: number.nationalNumber });
   }
+  for (const m of text.matchAll(NANP_RE)) {
+    if (!isFormattedPhone(m[0])) continue;
+    const nationalNumber = m[0].replace(NON_DIGIT_RE, "").slice(-NANP_LENGTH);
+    phones.push({ startsAt: m.index, endsAt: m.index + m[0].length, nationalNumber });
+  }
+  return phones;
+}
+
+/** Which characters sit inside a set-aside token: phones, dates, ZIP+4s, amounts, year lists. */
+function asideMask(text: string, phones: FoundPhone[]) {
+  const aside: boolean[] = Array.from(text, () => false);
+  for (const { startsAt, endsAt } of phones) aside.fill(true, startsAt, endsAt);
+  for (const re of [DATE_RE, ZIP4_RE, AMOUNT_RE, YEAR_LIST_RE]) {
+    for (const m of text.matchAll(re)) aside.fill(true, m.index, m.index + m[0].length);
+  }
+  return aside;
+}
+
+/**
+ * What may follow a phone's digits: nothing, or the digit group after it,
+ * across extension markers and separators; `marked` when a marker ("x", "ext",
+ * "#") comes first.
+ */
+function tailsAfter(text: string, from: number, aside: boolean[]) {
+  const rest = text.slice(from);
+  const gap = JOIN_GAP_RE.exec(rest)![0];
+  const group = LEADING_GROUP_RE.exec(rest.slice(gap.length))![0];
+  const marked = EXT_MARK_RE.test(gap);
+  const street = !marked && STREET_NAME_RE.test(rest.slice(gap.length + group.length));
+  const joins = gap.length <= MAX_JOIN_GAP && !aside[from + gap.length] && !street;
+  return { tails: joins ? ["", group] : [""], marked };
+}
+
+/** What may come before a phone's digits: nothing, or the digit group just before it, across 1-3 separators. */
+function headsBefore(text: string, to: number, aside: boolean[]) {
+  const m = TRAILING_GROUP_RE.exec(text.slice(0, to));
+  return m !== null && !aside[m.index] ? ["", m[1]] : [""];
+}
+
+/**
+ * A join counts when its tail has 5+ digits (a 15-digit card, or 16 after
+ * "+1"), or it adds 6+ digits in all (a 16-digit card is a 10-digit phone and
+ * 6 more, on either side or split across both). A short tail after an
+ * extension marker is an extension, so it does not join a head
+ * ("Suite 210, (404) 555-0147 ext. 2045" is an address, not a split number).
+ */
+function joinCounts(head: string, tail: string, marked: boolean) {
+  if (tail.length >= MIN_TAIL || head + tail === "") return true;
+  return head.length + tail.length >= MIN_ADDED_DIGITS && !(marked && tail);
+}
+
+/**
+ * Overwrites each phone set aside with letters of the same length (so
+ * offsets still line up), and reports whether any of them hides a card.
+ */
+function setPhonesAside(text: string) {
+  const phones = findPhones(text);
+  const aside = asideMask(text, phones);
+  let masked = text;
+  let hidesCard = false;
+  for (const { startsAt, endsAt, nationalNumber } of phones) {
+    const phone = text.slice(startsAt, endsAt);
+    const bases = [nationalNumber, phone.replace(NON_DIGIT_RE, "")];
+    const heads = headsBefore(text, startsAt, aside);
+    const { tails, marked } = tailsAfter(text, endsAt, aside);
+    hidesCard ||= heads.some((head) =>
+      tails.some((tail) => joinCounts(head, tail, marked) && bases.some((base) => isLuhnCard(head + base + tail))),
+    );
+    masked = masked.slice(0, startsAt) + "Z".repeat(phone.length) + masked.slice(endsAt);
+  }
+  return { masked, hidesCard };
+}
+
+/** Sets aside dates, ZIP+4s, amounts, year lists, and VINs so they do not join into a run. */
+function maskWellFormed(text: string) {
+  let out = text;
   for (const re of [DATE_RE, ZIP4_RE, AMOUNT_RE, YEAR_LIST_RE]) out = out.replace(re, maskUnlessCard);
   return out.replace(VIN_RE, maskVin);
 }
@@ -184,18 +321,21 @@ function maskWellFormed(text: string) {
 /**
  * Full account, card, or SSN shapes, the same in every field (phone and
  * email included), in order:
- * 1. any 13-19 digit loose run that passes Luhn, with no exemptions;
- * 2. an SSN layout (3-2-4 digits; any separators, single letters included);
- * 3. once well-formed tokens are set aside (formatted valid phones, dates,
- *    ZIP+4s, amounts, year lists, VINs with a valid check digit; none of
- *    them Luhn-valid), any run of
- *    9+ digits. A phone written as a bare run ("4045550123") is not set aside.
+ * 1. a formatted phone that hides a card (see Phones above); formatted valid
+ *    phones are then set aside for the checks below;
+ * 2. any other 13-19 digit loose run that passes Luhn, also tried without a
+ *    leading country code "1" ("1 4111 1111 1111 1111");
+ * 3. an SSN layout (3-2-4 digits; any separators, single letters included);
+ * 4. once well-formed tokens are also set aside (dates, ZIP+4s, amounts, year
+ *    lists, VINs; none of them Luhn-valid), any run of 9+ digits. A phone
+ *    written as a bare run ("4045550123") is not set aside.
  */
 export function findFullNumber(raw: string): PrivacyReason | null {
   const text = normalizeForScan(raw);
-  if (holdsCard(text)) return "full_number";
+  const { masked, hidesCard } = setPhonesAside(text);
+  if (hidesCard || holdsCard(masked)) return "full_number";
   if (SSN_RE.test(text)) return "ssn";
-  const run = digitRuns(maskWellFormed(text)).find((d) => d.length >= MIN_BARE_RUN);
+  const run = digitRuns(maskWellFormed(masked)).find((d) => d.length >= MIN_BARE_RUN);
   if (run === undefined) return null;
   return run.length === MIN_BARE_RUN ? "ssn" : "full_number";
 }
