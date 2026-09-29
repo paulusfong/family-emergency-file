@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { before, describe, it } from "node:test";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 const testdir = fs.mkdtempSync(path.join(os.tmpdir(), "fef-hh-"));
 process.env.DATABASE_URL = `file:${path.join(testdir, "t.sqlite")}`;
@@ -14,6 +14,7 @@ describe("ensureHouseholdFile", async () => {
   const { applySchema } = await import("../test/apply-schema");
   const { id } = await import("./ids");
   const { ensureHouseholdFile, listSections, progressPercent } = await import("./household");
+  const { CHECKLIST_SEED_TOTAL, SECTION_CHECKLISTS } = await import("./sections");
 
   async function makeUser(label: string) {
     const userId = id();
@@ -31,6 +32,28 @@ describe("ensureHouseholdFile", async () => {
 
   async function filesFor(userId: string) {
     return db.select().from(schema.householdFiles).where(eq(schema.householdFiles.userId, userId));
+  }
+
+  async function itemsFor(fileId: string) {
+    return db
+      .select({
+        id: schema.checklistItems.id,
+        sectionKey: schema.sections.sectionKey,
+        itemKey: schema.checklistItems.itemKey,
+        label: schema.checklistItems.label,
+        status: schema.checklistItems.status,
+        sortOrder: schema.checklistItems.sortOrder,
+      })
+      .from(schema.checklistItems)
+      .innerJoin(schema.sections, eq(schema.sections.id, schema.checklistItems.sectionId))
+      .where(eq(schema.sections.householdFileId, fileId))
+      .orderBy(schema.sections.sortOrder, schema.checklistItems.sortOrder);
+  }
+
+  function expectedItems() {
+    return schema.SECTION_DEFS.flatMap((d) =>
+      SECTION_CHECKLISTS[d.key].map((item, i) => [d.key, item.key, item.label, "open", i + 1]),
+    );
   }
 
   before(async () => {
@@ -52,6 +75,47 @@ describe("ensureHouseholdFile", async () => {
     );
     assert.equal(new Set(secs.map((s) => s.id)).size, 12);
     assert.ok(secs.every((s) => s.createdAt instanceof Date && s.createdAt.getTime() > 0));
+  });
+
+  it("seeds every section's starter checklist items, open and in order", async () => {
+    const userId = await makeUser("items");
+    const file = await ensureHouseholdFile(userId);
+    const items = await itemsFor(file.id);
+    assert.deepEqual(
+      items.map((r) => [r.sectionKey, r.itemKey, r.label, r.status, r.sortOrder]),
+      expectedItems(),
+    );
+    assert.equal(items.length, CHECKLIST_SEED_TOTAL);
+    assert.equal(new Set(items.map((r) => r.id)).size, CHECKLIST_SEED_TOTAL);
+  });
+
+  it("backfills checklist items for a file created before checklists existed", async () => {
+    const userId = await makeUser("pre-checklist");
+    const file = await ensureHouseholdFile(userId);
+    const secs = await listSections(file.id);
+    const [s3] = secs.filter((s) => s.sectionKey === "S3");
+    await db
+      .delete(schema.checklistItems)
+      .where(inArray(schema.checklistItems.sectionId, secs.map((s) => s.id)));
+    const now = new Date();
+    const keptId = id();
+    await db.insert(schema.checklistItems).values({
+      id: keptId,
+      sectionId: s3.id,
+      itemKey: "checking-savings",
+      label: "Checking and savings accounts",
+      status: "done",
+      sortOrder: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await ensureHouseholdFile(userId);
+    const items = await itemsFor(file.id);
+    assert.equal(items.length, CHECKLIST_SEED_TOTAL);
+    const kept = items.find((r) => r.id === keptId)!;
+    assert.equal(kept.status, "done");
+    assert.equal(items.filter((r) => r.sectionKey === "S3" && r.itemKey === "checking-savings").length, 1);
   });
 
   it("is idempotent on a second call and does not touch sections", async () => {
@@ -106,6 +170,7 @@ describe("ensureHouseholdFile", async () => {
     const files = await filesFor(userId);
     assert.equal(files.length, 1);
     assert.equal((await listSections(files[0].id)).length, 12);
+    assert.equal((await itemsFor(files[0].id)).length, CHECKLIST_SEED_TOTAL);
   });
 
   it("survives concurrent backfills of the same sparse file", async () => {
@@ -118,9 +183,22 @@ describe("ensureHouseholdFile", async () => {
     );
     assert.deepEqual(results.filter((r) => r.status === "rejected"), []);
     assert.equal((await listSections(fileId)).length, 12);
+    assert.equal((await itemsFor(fileId)).length, CHECKLIST_SEED_TOTAL);
   });
 
-  it("is read-only in steady state and writes only when sections are missing", async () => {
+  it("survives concurrent checklist backfills of a pre-checklist file", async () => {
+    const userId = await makeUser("race-items");
+    const file = await ensureHouseholdFile(userId);
+    const sectionIds = (await listSections(file.id)).map((s) => s.id);
+    await db.delete(schema.checklistItems).where(inArray(schema.checklistItems.sectionId, sectionIds));
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () => ensureHouseholdFile(userId)),
+    );
+    assert.deepEqual(results.filter((r) => r.status === "rejected"), []);
+    assert.equal((await itemsFor(file.id)).length, CHECKLIST_SEED_TOTAL);
+  });
+
+  it("is read-only in steady state and writes only when sections or items are missing", async () => {
     const userId = await makeUser("steady");
     await ensureHouseholdFile(userId);
     const origBatch = db.batch.bind(db);
@@ -139,6 +217,14 @@ describe("ensureHouseholdFile", async () => {
       await ensureHouseholdFile(userId);
       assert.equal(batches, 1);
       assert.equal((await listSections(file.id)).length, 12);
+
+      const [anyItem] = await itemsFor(file.id);
+      await db.delete(schema.checklistItems).where(eq(schema.checklistItems.id, anyItem.id));
+      await ensureHouseholdFile(userId);
+      assert.equal(batches, 2);
+      assert.equal((await itemsFor(file.id)).length, CHECKLIST_SEED_TOTAL);
+      await ensureHouseholdFile(userId);
+      assert.equal(batches, 2);
     } finally {
       (db as { batch: unknown }).batch = origBatch;
     }
