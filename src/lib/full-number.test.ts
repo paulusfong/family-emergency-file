@@ -849,6 +849,10 @@ describe("findFullNumber: digits grouped tightly with a phone, in text with no l
     const tail = luhnTail(NAT, 3);
     assert.equal(findFullNumber(`${PHONE} ${tail}.25`), null);
     assert.equal(findFullNumber(`${PHONE} (312) 867-5309`), null);
+    // An amount right against the phone still ends the stretch: 0000 + the phone would be a card.
+    assert.equal(passesLuhn(`0000${NAT}`), true);
+    assert.equal(findFullNumber(`0000 ${PHONE}`), "full_number");
+    assert.equal(findFullNumber(`0000 $950${PHONE}`), null);
   });
 
   it("still blocks the standard printed layouts next to a phone", () => {
