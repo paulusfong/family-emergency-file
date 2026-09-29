@@ -1,0 +1,1 @@
+ALTER TABLE `household_files` ADD `privacy_ack_at` integer;

@@ -70,6 +70,8 @@ export const householdFiles = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
     lastReviewedAt: integer("last_reviewed_at", { mode: "timestamp" }),
+    /** When the owner dismissed the first-run privacy sheet; null shows it. */
+    privacyAckAt: integer("privacy_ack_at", { mode: "timestamp" }),
   },
   (t) => [uniqueIndex("household_files_userId").on(t.userId)],
 );
