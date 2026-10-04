@@ -396,17 +396,43 @@ export function looksLikeFullNumber(text: string) {
   return findFullNumber(text) !== null;
 }
 
+/*
+ * Labels and values. A label counts when a separator comes right after it:
+ * ":" or "=" (after spaces or "#": "password : x", "PIN #: 1234"), or a dash
+ * with a space on one side ("password - x", "password -- x", "Password — x",
+ * "password -> x"; not "password-protected"). The whole run of separators
+ * after it is skipped ("password:: x", "password := x", "password => x",
+ * "password: - x", "password: * x", "Password: — x") and the first token
+ * after that is the value, so punctuation can never stand in for one.
+ * Labels are matched after foldConfusables, so "раssword" (Cyrillic р and а)
+ * is "password".
+ */
+const DASHES = "\\-\\u2010-\\u2015\\u2212";
+const SEPARATORS = `\\s:=#*.,;~|>${DASHES}`;
+const COLON_MARK = "[ \\t#]*[:=]";
+const DASH_MARK = `[ \\t]+[${DASHES}]|[${DASHES}]+>?[ \\t]`;
+const labelledValueRe = (label: string, mark: string) =>
+  new RegExp(`${label}(?=${mark})[${SEPARATORS}]*([^${SEPARATORS}]\\S*)`, "gi");
+
 /**
- * Labels that name a credential outright. "label: value" or "label=value" is
- * blocked, unless the value is a pointer ("Password: in the family vault").
+ * Labels that name a credential outright. A value after one is blocked,
+ * unless it is a pointer ("Password: in the family vault").
  */
 const CREDENTIAL_LABELS =
   "password|passwd|passcode|pin(?: code| number)?|secret|security answers?|(?:2fa )?backup codes?|2fa codes?";
-const CREDENTIAL_RE = new RegExp(`\\b(?:${CREDENTIAL_LABELS})\\s*[:=]\\s*(\\S+)`, "gi");
-/** Softer labels, and any label with "#", only warn. */
+const CREDENTIAL_RES = [
+  labelledValueRe(`\\b(?:${CREDENTIAL_LABELS})`, `${COLON_MARK}|${DASH_MARK}`),
+  /*
+   * "Pass: x", but only with ":" or "=" and with no word just before it:
+   * "Boarding pass: Delta app", "Season pass - June", "Passport: x", and
+   * "bypass: x" are ordinary text.
+   */
+  labelledValueRe("(?<![a-z][ \\t]*)\\bpass", COLON_MARK),
+];
+/** Softer labels, and any label with "#" alone, only warn. */
 const SECRET_LABELS =
   "password|passwd|pwd|passcode|passphrase|pin(?: code| number)?|secret|security (?:code|answer)|seed phrase|recovery (?:phrase|code)|backup codes?|cvv|cvc|otp";
-const LABEL_WITH_VALUE_RE = new RegExp(`\\b(?:${SECRET_LABELS})\\s*[:=#]\\s*(\\S+)`, "gi");
+const LABEL_WITH_VALUE_RE = labelledValueRe(`\\b(?:${SECRET_LABELS})`, `[ \\t]*[:=#]|${DASH_MARK}`);
 /** "Recovery codes: in the fire safe" is a pointer, which is what we want. */
 const NOT_A_VALUE = new Set([
   "in", "at", "on", "inside", "kept", "stored", "see", "ask", "printed",
@@ -471,13 +497,30 @@ function hasSecretLabel(text: string) {
   return is[1] !== "" || /[\d\W_]/.test(value);
 }
 
+/**
+ * Cyrillic and Greek letters that look like Latin ones, each above the Latin
+ * letter it passes for (plus Latin alpha and dotless i). One code unit for
+ * one, so offsets do not move.
+ */
+const CONFUSABLES = "асԁеһіјкорԛѕԝхуАВСЕНІЈКМОРЅТХԜαικνορυΑΒΕΖΗΙΚΜΝΟΡΤΥΧɑı";
+const LOOKS_LIKE = "acdehijkopqswxyABCEHIJKMOPSTXWaikvopuABEZHIKMNOPTYXai";
+const CONFUSABLE_RE = new RegExp(`[${CONFUSABLES}]`, "g");
+
+/** Each look-alike letter in CONFUSABLES replaced by the Latin letter it passes for. */
+export function foldConfusables(text: string) {
+  return text.replace(CONFUSABLE_RE, (ch) => LOOKS_LIKE[CONFUSABLES.indexOf(ch)]);
+}
+
 /** The strongest finding for a piece of free text, or null when it looks fine. */
 export function scanText(raw: string): PrivacyFinding | null {
   const full = findFullNumber(raw);
   if (full) return { level: "block", reason: full, message: FULL_NUMBER_ERROR };
   const text = normalizeForScan(raw);
-  if (hasLabelledValue(CREDENTIAL_RE, text)) return { level: "block", reason: "credential", message: CREDENTIAL_ERROR };
-  if (hasSecretLabel(text)) return { level: "warn", reason: "secret_label", message: SECRET_WARNING };
+  const labels = foldConfusables(text);
+  if (CREDENTIAL_RES.some((re) => hasLabelledValue(re, labels))) {
+    return { level: "block", reason: "credential", message: CREDENTIAL_ERROR };
+  }
+  if (hasSecretLabel(labels)) return { level: "warn", reason: "secret_label", message: SECRET_WARNING };
   if (text.split(/\s/).some(looksLikeSecretToken)) {
     return { level: "warn", reason: "secret_token", message: SECRET_WARNING };
   }

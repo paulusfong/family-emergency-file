@@ -157,6 +157,13 @@ describe("QA blockers: every field runs the shared privacy checks", () => {
     assert.deepEqual(contact({ phone: "PIN=4821" }), { ok: false, fieldErrors: { phone: CREDENTIAL_ERROR } });
   });
 
+  it("rejects a credential behind odd punctuation in a note, and keeps a pointer", () => {
+    for (const notes of ["password:: hunter2", "password := x", "Password: — x", "password -- x", "pass: x", "р\u0430ssword: x"]) {
+      assert.deepEqual(validateEntry("note", { label: "Wi-Fi", notes }), { ok: false, fieldErrors: { notes: CREDENTIAL_ERROR } }, notes);
+    }
+    assert.equal(validateEntry("note", { label: "Wi-Fi", notes: "Password:: in the family vault" }).ok, true);
+  });
+
   it("QA-1: still accepts real phones and emails, and Last 4 stays 4 digits", () => {
     const ok = contact({ phone: "+1 (404) 555-0199", email: "pat@example.com" });
     assert.equal(ok.ok, true);

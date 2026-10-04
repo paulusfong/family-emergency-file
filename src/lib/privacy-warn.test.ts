@@ -7,6 +7,7 @@ import {
   entropyPerChar,
   findBlocked,
   findFullNumber,
+  foldConfusables,
   looksLikeFullNumber,
   looksLikeSecretToken,
   pendingFindings,
@@ -283,6 +284,114 @@ describe("scanText", () => {
     assert.match(FULL_NUMBER_ERROR, /last 4 digits at most/);
     assert.match(SECRET_WARNING, /password manager/);
     assert.match(SECRET_WARNING, /where it lives/);
+  });
+});
+
+describe("credential labels followed by punctuation (QA)", () => {
+  const blocked = (text: string) => assert.deepEqual(scanText(text), { level: "block", reason: "credential", message: CREDENTIAL_ERROR }, text);
+
+  it("skips a run of separators after the label and checks the value behind it", () => {
+    // QA's eleven forms (pw23.py): punctuation that used to be read as the value.
+    for (const text of [
+      "password:: x",
+      "password := x",
+      "password => x",
+      "password: - x",
+      "password = = x",
+      "password: : x",
+      "password: = x",
+      "password: . x",
+      "password: * x",
+      "Password: — x",
+      "password -- x",
+    ]) {
+      blocked(text);
+      blocked(text.replace("x", "hunter2"));
+      blocked(`Notes for Pat\n${text} - thanks`);
+    }
+    for (const text of ["password:\t;~| x", "PIN: ... 4821", "passcode: ** 0000", "secret: >x", "password:\n- x", "password: −‐‑‒–― x"]) blocked(text);
+  });
+
+  it("reads a dash with a space beside it as a separator, with no colon", () => {
+    for (const text of ["password - x", "password -> x", "Password — x", "password – x", "password- x", "password -x", "PIN - 4821", "Passcode -- 0000"]) {
+      blocked(text);
+    }
+    for (const text of ["password-protected PDF", "Password-protected: yes", "password—kept in the vault", "Reset password\n- call the bank"]) {
+      assert.equal(level(text), null, text);
+    }
+  });
+
+  it("reads ':' or '=' after spaces or '#' as a separator", () => {
+    for (const text of ["password : x", "password\t= x", "PIN #: 1234", "pin # = 1234"]) blocked(text);
+    assert.equal(reason("password # hunter"), "secret_label");
+  });
+
+  it("blocks 'pass:' and 'pass=' with no word right before them", () => {
+    for (const text of ["pass: x", "Pass:hunter2", "PASS = x", "Login: pat / pass: hunter2", "Notes - pass: x", "pass #: x"]) blocked(text);
+    for (const text of [
+      "Boarding pass: Delta app",
+      "Bus pass: x",
+      "Season pass - expires June",
+      "pass - x",
+      "Passport: top drawer",
+      "Passport - top drawer",
+      "Passenger: Dana",
+      "Bypass: Route 9",
+      "Passed: inspection",
+      "Compass: glovebox",
+      "Pass the keys to Pat",
+      "Pass: in the family vault",
+    ]) {
+      assert.equal(level(text), null, text);
+    }
+  });
+
+  it("folds Cyrillic and Greek look-alike letters before matching a label", () => {
+    for (const text of ["\u0440\u0430ssword: x", "раѕѕԝоrԁ: x", "ΡΙΝ: 4821", "Рasscode = 0000", "ѕесrеt: x", "раѕѕ: x", "ΡΑSSWΟRD:: x"]) blocked(text);
+    assert.equal(reason("ρwd: hunter"), "secret_label");
+    assert.equal(reason("οtp: abc"), "secret_label");
+    assert.equal(level("раssword: in the family vault"), null);
+    assert.equal(level("Пароль: в сейфе"), null);
+    assert.equal(level("Секрет: нет"), null);
+  });
+
+  it("maps each look-alike to one Latin letter and leaves everything else alone", () => {
+    assert.equal(
+      foldConfusables("асԁеһіјкорԛѕԝхуАВСЕНІЈКМОРЅТХԜαικνορυΑΒΕΖΗΙΚΜΝΟΡΤΥΧɑı"),
+      "acdehijkopqswxyABCEHIJKMOPSTXWaikvopuABEZHIKMNOPTYXai",
+    );
+    assert.equal(foldConfusables("Пароль: в сейфе, 4821 Main St"), "Пapoль: в ceйфe, 4821 Main St");
+  });
+
+  it("only warns on the softer labels, whatever the separators", () => {
+    for (const text of ["pwd:: hunter", "pwd - hunter", "otp => abc", "recovery code: — abcd", "Passphrase -- correct horse"]) {
+      assert.equal(reason(text), "secret_label", text);
+    }
+  });
+
+  it("still allows labels that point somewhere or have no value", () => {
+    for (const text of [
+      "Password is in the safe",
+      "password: see access plan",
+      "Password: in the family vault",
+      "Password: see Example Password Manager",
+      "PIN: kept in the fire safe",
+      "Recovery codes: in the fire safe",
+      "password: ********",
+      "Password:: in the family vault",
+      "Password: — see the access plan",
+      "password => kept in the safe",
+      "PIN - kept in the fire safe",
+      "password: - none",
+      "password: :",
+      "Password / PIN: see the access plan",
+      "Passwords: see the family vault",
+    ]) {
+      assert.equal(level(text), null, text);
+    }
+    // Not a credential label; "1Password" alone reads like a password token, so it only warns, as before.
+    assert.equal(reason("Password manager: 1Password"), "secret_token");
+    assert.equal(reason("Password manager — 1Password"), "secret_token");
   });
 });
 
