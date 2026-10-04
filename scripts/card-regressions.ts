@@ -3,14 +3,16 @@
  *
  *   npx tsx scripts/card-regressions.ts [--base <git rev>] [--probes <file.json>]... [--out <file.json>]
  *
- * Compares findFullNumber at a base revision (default 2e7c80e, the last one
- * with no phone exemption for the Luhn check; after a history rewrite, pass
- * the commit with the same tree) against the working tree over:
- * - card-layouts: 440,000 generated Luhn-valid cards (13, 15, 16, 19 digits;
- *   10,000 each) in 11 layouts, many phone-shaped (seed 7);
+ * Compares findFullNumber at a base revision (default 5b5bc50, the last one
+ * with no phone exemption for the Luhn check: the same tree as 2e7c80e before
+ * the history rewrite) against the working tree over:
+ * - card-layouts: 680,000 generated Luhn-valid cards (13, 15, 16, 19 digits;
+ *   10,000 each) in 17 layouts, many phone-shaped, six of them split around a
+ *   phone by a run of spaces or a tab (seed 7);
  * - issuer-layouts: standard printed layouts (16 and 19 digits in groups of 4,
- *   Amex 4-6-5, 13-digit 4-4-5, unspaced), alone, in a sentence, and next to
- *   a phone; every one must be blocked (QA rule 1);
+ *   Amex 4-6-5, 13-digit 4-4-5, Diners 14-digit 4-6-4, unspaced), with a
+ *   space, "-", or "." between groups, alone, after a label, in a sentence,
+ *   and next to a phone; every one must be blocked (QA rule 1);
  * - any --probes file: a JSON object of key -> string (or { v: string }),
  *   such as QA's probes8.json from gen8.
  * An input is a regression when the base blocked it and the working tree does
@@ -34,7 +36,7 @@ type Fn = (text: string) => string | null;
 
 const args = process.argv.slice(2);
 const opt = (name: string) => args.flatMap((a, i) => (a === name && args[i + 1] ? [args[i + 1]] : []));
-const base = opt("--base")[0] ?? "2e7c80e";
+const base = opt("--base")[0] ?? "5b5bc50";
 const out = opt("--out")[0];
 
 async function loadBase(rev: string): Promise<Fn> {
@@ -66,7 +68,10 @@ const card = (n: number, prefix = "") => {
   return body + checkDigit(body);
 };
 
-/** The 11 layouts of the round-4 measurement (many of them phone-shaped). */
+/**
+ * The 11 layouts of the round-4 measurement (many of them phone-shaped), and
+ * six with the groups next to a phone split off by a run of spaces or a tab.
+ */
 const CARD_LAYOUTS: Record<string, (c: string) => string> = {
   "4444sp": (c) => c.match(/.{1,4}/g)!.join(" "),
   "4444dash": (c) => c.match(/.{1,4}/g)!.join("-"),
@@ -79,6 +84,12 @@ const CARD_LAYOUTS: Record<string, (c: string) => string> = {
   "4 6 rest": (c) => `${c.slice(0, 4)} ${c.slice(4, 10)} ${c.slice(10)}`,
   "3 3-4 rest": (c) => `${c.slice(0, 3)} ${c.slice(3, 6)}-${c.slice(6, 10)} ${c.slice(10)}`,
   "2 3 3-4 rest": (c) => `${c.slice(0, 2)} ${c.slice(2, 5)} ${c.slice(5, 8)}-${c.slice(8, 12)} ${c.slice(12)}`,
+  "head    (3) 3-4": (c) => `${c.slice(0, c.length - 10)}    (${c.slice(-10, -7)}) ${c.slice(-7, -4)}-${c.slice(-4)}`,
+  "head\t(3) 3-4": (c) => `${c.slice(0, c.length - 10)}\t(${c.slice(-10, -7)}) ${c.slice(-7, -4)}-${c.slice(-4)}`,
+  "(3) 3-4 x17sp rest": (c) => `(${c.slice(0, 3)}) ${c.slice(3, 6)}-${c.slice(6, 10)}${" ".repeat(17)}${c.slice(10)}`,
+  "3-3-4\trest": (c) => `${c.slice(0, 3)}-${c.slice(3, 6)}-${c.slice(6, 10)}\t${c.slice(10)}`,
+  "2  (3) 3-4  rest": (c) => `${c.slice(0, 2)}  (${c.slice(2, 5)}) ${c.slice(5, 8)}-${c.slice(8, 12)}  ${c.slice(12)}`,
+  "head \t 3.3.4": (c) => `${c.slice(0, c.length - 10)} \t ${c.slice(-10, -7)}.${c.slice(-7, -4)}.${c.slice(-4)}`,
 };
 
 type Input = { set: string; kind: string; v: string };
@@ -103,6 +114,8 @@ const ISSUER_LAYOUTS: [string, number, number[]][] = [
   ["19 in 4s", 19, [4, 4, 4, 4, 3]],
   ["Amex 4-6-5", 15, [4, 6, 5]],
   ["13 as 4-4-5", 13, [4, 4, 5]],
+  ["Diners 4-6-4", 14, [4, 6, 4]],
+  ["14 unspaced", 14, []],
   ["16 unspaced", 16, []],
   ["19 unspaced", 19, []],
   ["15 unspaced", 15, []],
@@ -110,6 +123,7 @@ const ISSUER_LAYOUTS: [string, number, number[]][] = [
 ];
 const ISSUER_PREFIXES: Record<number, string[]> = {
   13: ["4", ""],
+  14: ["36", "38", "30", "300", "305", ""],
   15: ["34", "37", ""],
   16: ["4", "51", "55", "2221", "2720", "6011", "65", ""],
   19: ["4", "62", "6011", ""],
@@ -117,6 +131,7 @@ const ISSUER_PREFIXES: Record<number, string[]> = {
 const CONTEXTS: [string, (c: string) => string][] = [
   ["alone", (c) => c],
   ["label", (c) => `Card: ${c}`],
+  ["issuer-label", (c) => `Diners Club ${c}`],
   ["sentence", (c) => `Visa ${c} exp 04/28, in the fire safe`],
   ["phone-then-card", (c) => `(404) 683-5510 ${c}`],
   ["card-then-phone", (c) => `${c} (404) 683-5510`],
@@ -128,12 +143,12 @@ const CONTEXTS: [string, (c: string) => string][] = [
 function* issuerInputs(): Generator<Input> {
   seed = 11;
   for (const [name, n, sizes] of ISSUER_LAYOUTS) {
-    for (const sep of sizes.length ? [" ", "-"] : [""]) {
+    for (const sep of sizes.length ? [" ", "-", "."] : [""]) {
       for (let i = 0; i < 500; i++) {
         const prefixes = ISSUER_PREFIXES[n];
         const c = card(n, prefixes[i % prefixes.length]);
         const printed = sizes.length ? groups(c, sizes, sep) : c;
-        for (const [ctx, f] of CONTEXTS) yield { set: "issuer-layouts", kind: `${name}${sep === "-" ? " dash" : ""}/${ctx}`, v: f(printed) };
+        for (const [ctx, f] of CONTEXTS) yield { set: "issuer-layouts", kind: `${name}${{ "-": " dash", ".": " dot" }[sep] ?? ""}/${ctx}`, v: f(printed) };
       }
     }
   }
