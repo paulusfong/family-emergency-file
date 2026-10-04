@@ -651,7 +651,9 @@ describe("findFullNumber: digits after a phone (tails)", () => {
   it("joins within 16 characters after the phone, not 17", () => {
     const tail = luhnTail(NAT, 6);
     assert.equal(findFullNumber(PHONE + " ".repeat(16) + tail), "full_number");
-    assert.equal(findFullNumber(PHONE + " ".repeat(17) + tail), null);
+    // In text with no letters, any run of spaces joins (see below).
+    assert.equal(findFullNumber(`Call ${PHONE}${" ".repeat(16)}${tail}`), "full_number");
+    assert.equal(findFullNumber(`Call ${PHONE}${" ".repeat(17)}${tail}`), null);
   });
 
   it("joins the whole next digit group", () => {
@@ -714,9 +716,12 @@ describe("findFullNumber: digits before a phone (heads)", () => {
 
   it("does not join a head across letters, 4+ separators, or nothing", () => {
     const head = luhnHead(NAT, 6);
-    for (const gap of [" a ", " -- ", " Tel ", "    "]) {
+    for (const gap of [" a ", " -- ", " Tel "]) {
       assert.equal(findFullNumber(head + gap + PHONE), null, JSON.stringify(gap));
     }
+    // In text with no letters, any run of spaces joins (see below).
+    assert.equal(findFullNumber(`Box ${head}   ${PHONE}`), "full_number");
+    assert.equal(findFullNumber(`Box ${head}    ${PHONE}`), null);
     assert.equal(findFullNumber(`${head} then ${PHONE}`), null);
   });
 
@@ -800,7 +805,7 @@ describe("findFullNumber: digits grouped tightly with a phone, in text with no l
 
   it("does not join a short group across other separators, or when the text has a letter", () => {
     const tail = luhnTail(NAT, 3);
-    for (const gap of [" - ", ", ", "; ", " / ", " | ", "\n", "  ", " #", " · "]) {
+    for (const gap of [" - ", ", ", "; ", " / ", " | ", "\n", " #", " · "]) {
       assert.equal(findFullNumber(PHONE + gap + tail), null, JSON.stringify(gap));
     }
     assert.equal(findFullNumber(`${luhnHead(NAT, 5)} - ${PHONE}`), null);
@@ -862,6 +867,97 @@ describe("findFullNumber: digits grouped tightly with a phone, in text with no l
         assert.equal(findFullNumber(text), "full_number", text);
       }
     }
+  });
+});
+
+describe("findFullNumber: QA round 6 leaks", () => {
+  // Each is a Luhn-valid card that saved: the phone rules set part of it aside.
+  const leaks = [
+    "Diners Club 3845 201735 4845",
+    "445195    (683) 237-4184",
+    `(416) 374-2569${" ".repeat(17)}583513`,
+  ];
+
+  it("blocks each one", () => {
+    for (const v of leaks) {
+      assert.equal(passesLuhn(v.replace(/[^0-9]/g, "")), true, v);
+      assert.equal(findFullNumber(v), "full_number", JSON.stringify(v));
+    }
+  });
+});
+
+describe("findFullNumber: a 14-digit card printed 4-6-4 (Diners Club)", () => {
+  // Its last ten digits read as a phone ("201735 4845"), and four digits
+  // before a phone are a street number, so the layout is checked first.
+  const DINERS = "3845 201735 4845";
+  const SPOILT = "3845 201735 4846";
+
+  it("blocks the layout with each separator, in every context", () => {
+    for (const sep of [" ", "-", ".", "  ", "\t", " \t "]) {
+      const card = DINERS.replaceAll(" ", sep);
+      for (const text of [card, `Diners Club ${card}`, `Card: ${card} exp 11/27`, `${card} is the card`, `Call ${PHONE}, card ${card}`]) {
+        assert.equal(findFullNumber(text), "full_number", JSON.stringify(text));
+      }
+    }
+    // The check digit counts: the same layout one digit off is a street number and a phone.
+    assert.equal(findFullNumber(`Diners Club ${SPOILT}`), null);
+    assert.equal(findFullNumber(`Call ${PHONE}, card ${SPOILT.replaceAll(" ", "-")}`), null);
+  });
+
+  it("needs the same separator between both pairs of groups", () => {
+    // A year before a phone written 6-4.
+    assert.equal(passesLuhn("20197703650135"), true);
+    assert.equal(findFullNumber("Dana, 2019 770365-0135"), null);
+    assert.equal(findFullNumber("Dana, 2019 770365 0135"), "full_number");
+    assert.equal(findFullNumber("Dana, 2019-770365-0135"), "full_number");
+  });
+
+  it("blocks 4-6-4 cards whose last ten digits are a phone, for each Diners prefix", () => {
+    for (const card of ["3656 834567 1436", "3851 804511 8764", "3034 637611 1952", "3600 324280 0391"]) {
+      assert.equal(passesLuhn(card.replace(/ /g, "")), true, card);
+      assert.equal(findFullNumber(`Diners ${card}`), "full_number", card);
+      assert.equal(findFullNumber(`Diners ${card.replace(/ /g, "-")}`), "full_number", card);
+    }
+  });
+
+  it("reads only groups of exactly 4, 6, and 4 digits", () => {
+    // A ZIP or a street number before a 6-4 phone is not a card group: 23845 + 201735 4845.
+    assert.equal(findFullNumber(`Box 2${DINERS}`), null);
+    assert.equal(findFullNumber(`Box 2${DINERS.replaceAll(" ", "-")}`), null);
+    assert.equal(findFullNumber(`Box ${DINERS.slice(1)}`), null);
+    // Digits after it do not hide it.
+    assert.equal(findFullNumber(`Diners ${DINERS} 7`), "full_number");
+  });
+});
+
+describe("findFullNumber: digits around a phone across a run of spaces or tabs, in text with no letters", () => {
+  it("joins a group after the phone across any run of spaces and tabs", () => {
+    const tail = luhnTail(NAT, 6);
+    for (const gap of ["  ", "\t", " \t ", " ".repeat(17), "\t\t\t"]) {
+      assert.equal(findFullNumber(PHONE + gap + tail), "full_number", JSON.stringify(gap));
+      assert.equal(findFullNumber(PHONE + gap + spoil(tail)), null, JSON.stringify(gap));
+    }
+    const short = luhnTail(NAT, 3);
+    assert.equal(findFullNumber(`${PHONE}    ${short}`), "full_number");
+  });
+
+  it("joins a group before the phone across any run of spaces and tabs", () => {
+    const head = luhnHead(NAT, 6);
+    for (const gap of ["  ", "    ", "\t", " \t ", " ".repeat(20)]) {
+      assert.equal(findFullNumber(head + gap + PHONE), "full_number", JSON.stringify(gap));
+      assert.equal(findFullNumber(spoil(head) + gap + PHONE), null, JSON.stringify(gap));
+    }
+  });
+
+  it("joins groups on both sides and between them across runs of spaces", () => {
+    const tail = luhnTail(`41${NAT}12`, 2);
+    assert.equal(findFullNumber(`41   ${PHONE}\t12  ${tail}`), "full_number");
+    assert.equal(findFullNumber(`41   ${PHONE}\t12  ${spoil(tail)}`), null);
+  });
+
+  it("still keeps a text with a letter to the round-4 rules", () => {
+    const tail = luhnTail(NAT, 6);
+    assert.equal(findFullNumber(`Call ${PHONE}${" ".repeat(17)}${tail}`), null);
   });
 });
 

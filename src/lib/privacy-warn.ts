@@ -211,8 +211,17 @@ const LEADING_GROUP_RE = /[0-9]*/;
 const STREET_NAME_RE = /^\s+\p{L}{2}/u;
 const EXT_MARK_RE = /[\p{L}#]/u;
 const TRAILING_GROUP_RE = /([0-9]+)[^\p{L}0-9]{1,3}$/u;
-/** Digit groups with exactly one space, "-", or "." between them: how card digits are grouped. */
-const TIGHT_RUN_RE = /[0-9]+(?:[ .-][0-9]+)*/g;
+/** How card digits are grouped: a run of spaces or tabs, or exactly one "-" or ".". */
+const CARD_GAP = "(?:[ \\t]+|[.-])";
+const TIGHT_RUN_RE = new RegExp(`[0-9]+(?:${CARD_GAP}[0-9]+)*`, "g");
+/**
+ * A 14-digit card printed 4-6-4 (Diners Club). Its last ten digits read as a
+ * phone ("3845 201735 4845"), and four digits before a phone are a street
+ * number, so the layout is checked before phones are set aside. The same
+ * separator comes between both pairs of groups, as printed on a card; a year
+ * before a phone written 6-4 ("2019 770365-0135") is not one.
+ */
+const DINERS_RE = new RegExp(`(?<![0-9])[0-9]{4}(${CARD_GAP})[0-9]{6}\\1[0-9]{4}`, "g");
 const DIGIT_CHAR_RE = /[0-9]/;
 const LETTER_RE = /\p{L}/u;
 const MIN_TAIL = 5;
@@ -302,8 +311,9 @@ function joinCounts(head: string, tail: string, marked: boolean) {
  * For text with no letters: the whole-run card check (13-19 digits, Luhn,
  * also without a leading "1" written on its own), run on stretches of phones
  * (read as digits, whatever their inner formatting) and digit groups with a
- * single space, "-", or "." between them: "(525) 965-8909 210",
- * "17777 (402) 664-6221", "41 215 536-1819 125". Any other separator ends a
+ * run of spaces or tabs, or a single "-" or ".", between them:
+ * "(525) 965-8909 210", "17777 (402) 664-6221", "41 215 536-1819 125",
+ * "445195    (683) 237-4184". Any other separator ends a
  * stretch ("30301; (404) 683-5510"), as do the other set-aside tokens and a
  * "+" starting a phone (a card never has one). A stretch with no phone in it
  * is a 9+ digit run already.
@@ -346,6 +356,7 @@ function setPhonesAside(text: string) {
     );
     masked = masked.slice(0, startsAt) + "Z".repeat(phone.length) + masked.slice(endsAt);
   }
+  hidesCard ||= [...text.matchAll(DINERS_RE)].some(([card]) => passesLuhn(card.replace(NON_DIGIT_RE, "")));
   hidesCard ||= !LETTER_RE.test(text) && tightRunHidesCard(text, phones, aside);
   return { masked, hidesCard };
 }
@@ -360,8 +371,9 @@ function maskWellFormed(text: string) {
 /**
  * Full account, card, or SSN shapes, the same in every field (phone and
  * email included), in order:
- * 1. a formatted phone that hides a card (see Phones above); formatted valid
- *    phones are then set aside for the checks below;
+ * 1. a formatted phone that hides a card (see Phones above), or a Luhn-valid
+ *    card printed 4-6-4; formatted valid phones are then set aside for the
+ *    checks below;
  * 2. any other 13-19 digit loose run that passes Luhn, also tried without a
  *    leading country code "1" ("1 4111 1111 1111 1111");
  * 3. an SSN layout (3-2-4 digits; any separators, single letters included);
