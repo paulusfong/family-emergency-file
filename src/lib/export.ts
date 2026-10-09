@@ -60,12 +60,17 @@ function safe(value: string) {
   return findBlocked(value) ? REDACTED : value;
 }
 
+/** A field's label as exported: a trailing " (optional)" dropped, one anywhere else kept. */
+export function exportFieldLabel(label: string) {
+  return label.replace(/ \(optional\)$/, "");
+}
+
 function toExportEntry(row: ExportRows["entries"][number]): ExportEntry {
   const def = ENTRY_TYPE_DEFS[row.entryType];
   const payload = readPayload(row.entryType, row.payloadJson);
   const fields = def.fields
     .filter((f) => payload[f.name])
-    .map((f) => ({ name: f.name, label: f.label.replace(/ \(optional\)$/, ""), value: safe(payload[f.name]) }));
+    .map((f) => ({ name: f.name, label: exportFieldLabel(f.label), value: safe(payload[f.name]) }));
   return { type: row.entryType, typeTitle: def.title, label: safe(row.label), fields, updatedAt: row.updatedAt.toISOString() };
 }
 

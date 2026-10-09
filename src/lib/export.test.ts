@@ -101,6 +101,21 @@ describe("export", async () => {
       });
       assert.deepEqual(note, { type: "note", typeTitle: "Note", label: ex.REDACTED, fields: [], updatedAt: T0.toISOString() });
     });
+
+    it("redacts a credential stored behind odd punctuation before this check existed", () => {
+      const legacy = {
+        ...rows,
+        entries: [{ sectionId: "s3", entryType: "note" as const, label: "Wi-Fi", payloadJson: JSON.stringify({ notes: "password:: hunter2" }), updatedAt: T0 }],
+      };
+      assert.deepEqual(ex.buildExportData(legacy, T0).sections[2].entries[0].fields, [{ name: "notes", label: "Note", value: ex.REDACTED }]);
+    });
+
+    it("drops only a trailing ' (optional)' from a field label", () => {
+      assert.equal(ex.exportFieldLabel("Last 4 digits (optional)"), "Last 4 digits");
+      assert.equal(ex.exportFieldLabel("Notes (optional) for the executor"), "Notes (optional) for the executor");
+      assert.equal(ex.exportFieldLabel("Policy number (optional), last 4 (optional)"), "Policy number (optional), last 4");
+      assert.equal(ex.exportFieldLabel("Institution"), "Institution");
+    });
   });
 
   it("loads only the owner's file, in section, checklist, and entry order", async () => {
