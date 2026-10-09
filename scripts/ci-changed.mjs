@@ -21,10 +21,22 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Mutated outside src/lib. Keep business logic here, not in pages. */
-export const MUTATE_EXTRA = ["src/app/actions.ts", "src/app/app/sections/actions.ts", "src/proxy.ts"];
+export const MUTATE_EXTRA = [
+  "src/app/actions.ts",
+  "src/app/app/actions.ts",
+  "src/app/app/sections/actions.ts",
+  "src/proxy.ts",
+];
 
 /** src/lib modules Stryker skips (config objects and bootstraps; covered by tests). */
-export const STRYKER_EXCLUDED = ["src/lib/auth-client.ts", "src/lib/auth.ts", "src/lib/schema.ts", "src/lib/db.ts"];
+export const STRYKER_EXCLUDED = [
+  "src/lib/auth-client.ts",
+  "src/lib/auth.ts",
+  "src/lib/schema.ts",
+  "src/lib/db.ts",
+  // Copy only (checklist labels, why-it-matters lines), pinned by content tests; not worth mutating.
+  "src/lib/section-content.ts",
+];
 
 /** Stryker `mutate` globs; stryker.config.mjs imports this so the two never drift. */
 export const STRYKER_MUTATE = [
@@ -157,27 +169,45 @@ export function planFromChangedFiles(files, closure) {
   return { mode: "partial", testFiles, mutateFiles, mutateTestFiles, reason: "src changes: scoped tests and mutation", changed: files };
 }
 
-export const MAX_SHARDS = 4;
+export const MAX_SHARDS = 6;
 
 /**
- * Split mutate targets into at most `max` shards, largest file first onto the
- * lightest shard (source size approximates mutant count). Each shard lists the
- * tests that import its files; those are the only tests that can kill its
- * mutants. An empty `tests` means "run the whole suite".
+ * Split mutate targets into at most `max` shards. A shard's runtime is roughly
+ * (its mutants) x (the tests each mutant runs), so its cost is
+ * sum(source size) x sum(test size), with size standing in for mutant count
+ * and test time. Each file, most expensive first, goes to the shard it makes
+ * cheapest. Each shard runs only the tests that import its files, the only
+ * ones that can kill its mutants; a file no test imports makes its shard run
+ * the whole suite (`tests: ""`).
  */
 export function planShards(targets, closure, weight, max = MAX_SHARDS) {
   const count = Math.min(max, targets.length);
-  const shards = Array.from({ length: count }, () => ({ files: [], weight: 0 }));
-  const ordered = [...targets].sort((a, b) => weight(b) - weight(a) || a.localeCompare(b));
+  const allTests = [...closure.keys()];
+  const sum = (files) => files.reduce((n, f) => n + weight(f), 0);
+  const testsOf = new Map(targets.map((f) => [f, relatedTests([f], closure)]));
+  const cost = (files, tests, full) => sum(files) * sum(full ? allTests : [...tests]);
+  const shards = Array.from({ length: count }, () => ({ files: [], tests: new Set(), full: false }));
+  const alone = (f) => cost([f], testsOf.get(f), testsOf.get(f).length === 0);
+  const ordered = [...targets].sort((a, b) => alone(b) - alone(a) || a.localeCompare(b));
   for (const file of ordered) {
-    const lightest = shards.reduce((min, s) => (s.weight < min.weight ? s : min));
-    lightest.files.push(file);
-    lightest.weight += weight(file);
+    const own = testsOf.get(file);
+    let best = shards[0];
+    let bestCost = Infinity;
+    for (const shard of shards) {
+      const c = cost([...shard.files, file], new Set([...shard.tests, ...own]), shard.full || own.length === 0);
+      if (c < bestCost) {
+        best = shard;
+        bestCost = c;
+      }
+    }
+    best.files.push(file);
+    for (const t of own) best.tests.add(t);
+    best.full ||= own.length === 0;
   }
-  return shards.map((s, i) => ({
+  return shards.map((shard, i) => ({
     name: `${i + 1}-of-${count}`,
-    mutate: s.files.sort().join(","),
-    tests: relatedTests(s.files, closure).join(" "),
+    mutate: shard.files.sort().join(","),
+    tests: shard.full ? "" : [...shard.tests].sort().join(" "),
   }));
 }
 

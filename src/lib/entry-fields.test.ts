@@ -59,7 +59,14 @@ describe("entry field definitions", () => {
     ]);
     assert.deepEqual(names("policy"), ["institution", "policyType", "last4", "whereToFind", "whoToCall", "notes"]);
     assert.deepEqual(names("document_location"), ["whereToFind", "digitalCopy", "whoToCall", "notes"]);
+    assert.deepEqual(names("access_plan"), ["provider", "loginLocation", "recoveryPlan", "whoToCall", "notes"]);
     assert.deepEqual(names("note"), ["notes"]);
+    const plan = Object.fromEntries(ENTRY_TYPE_DEFS.access_plan.fields.map((f) => [f.name, f]));
+    assert.equal(plan.recoveryPlan.kind, "textarea");
+    assert.equal(plan.loginLocation.kind, "text");
+    assert.match(plan.loginLocation.hint!, /Never the password itself/);
+    assert.match(plan.recoveryPlan.hint!, /recovery kit or backup codes/);
+    assert.equal(ENTRY_TYPE_DEFS.access_plan.title, "Access plan");
     const kinds = Object.fromEntries(ENTRY_TYPE_DEFS.account.fields.map((f) => [f.name, f.kind]));
     assert.equal(kinds.last4, "last4");
     assert.equal(kinds.accessPlan, "textarea");
@@ -103,6 +110,11 @@ describe("entry field definitions", () => {
       "document_location.whereToFind.placeholder",
       "document_location.digitalCopy.placeholder",
       "document_location.whoToCall.placeholder",
+      "access_plan.provider.placeholder",
+      "access_plan.loginLocation.placeholder",
+      "access_plan.loginLocation.hint",
+      "access_plan.recoveryPlan.hint",
+      "access_plan.whoToCall.placeholder",
     ]) {
       assert.ok(withCopy.includes(expected), `missing helper copy: ${expected}`);
     }
@@ -424,6 +436,45 @@ describe("validateEntry", () => {
     });
     assert.match(FULL_NUMBER_ERROR, /last 4 digits at most/);
   });
+
+  it("uses the shared privacy rules: formatted phones pass, bare runs and spaced SSNs do not", () => {
+    assert.deepEqual(validateEntry("account", { label: "Joint checking", whoToCall: "Branch (800) 555-0100" }), {
+      ok: true,
+      label: "Joint checking",
+      payload: { whoToCall: "Branch (800) 555-0100" },
+    });
+    assert.deepEqual(validateEntry("account", { label: "Joint checking", whoToCall: "Branch 8005550100" }), {
+      ok: false,
+      fieldErrors: { whoToCall: FULL_NUMBER_ERROR },
+    });
+    assert.deepEqual(validateEntry("note", { label: "IDs", notes: "SSN 123 45 6789" }), {
+      ok: false,
+      fieldErrors: { notes: FULL_NUMBER_ERROR },
+    });
+  });
+
+  it("does not block warn-level text on the server; the editor asks first", () => {
+    assert.deepEqual(
+      validateEntry("access_plan", { label: "Family email", recoveryPlan: "pwd: hunter2", notes: "Tr0ub4dor&3" }),
+      { ok: true, label: "Family email", payload: { recoveryPlan: "pwd: hunter2", notes: "Tr0ub4dor&3" } },
+    );
+  });
+
+  it("rejects a labelled credential in any text field or the label", () => {
+    assert.deepEqual(
+      validateEntry("access_plan", { label: "Family email", loginLocation: "password: Tr0ub4dor&3", notes: "PIN=4821" }),
+      { ok: false, fieldErrors: { loginLocation: CREDENTIAL_ERROR, notes: CREDENTIAL_ERROR } },
+    );
+    assert.deepEqual(validateEntry("note", { label: "Secret: abc" }), {
+      ok: false,
+      fieldErrors: { label: CREDENTIAL_ERROR },
+    });
+    assert.deepEqual(validateEntry("access_plan", { label: "Family email", loginLocation: "Password: in the family vault" }), {
+      ok: true,
+      label: "Family email",
+      payload: { loginLocation: "Password: in the family vault" },
+    });
+  });
 });
 
 describe("readPayload", () => {
@@ -457,6 +508,11 @@ describe("entrySummary", () => {
       "Sister · Executor · 555-0100",
     );
     assert.equal(entrySummary("document_location", { whereToFind: "Fire safe" }), "Fire safe");
+    assert.equal(
+      entrySummary("access_plan", { provider: "Example Mail", loginLocation: "Family vault", notes: "x" }),
+      "Example Mail · Family vault",
+    );
+    assert.equal(entrySummary("access_plan", {}), "");
     assert.equal(entrySummary("note", { notes: "First line\nsecond" }), "First line");
     assert.equal(entrySummary("note", { notes: "x".repeat(80) }), "x".repeat(80));
     assert.equal(entrySummary("note", { notes: "x".repeat(81) }), `${"x".repeat(79)}…`);

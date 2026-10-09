@@ -13,7 +13,7 @@ describe("ensureHouseholdFile", async () => {
   const schema = await import("./schema");
   const { applySchema } = await import("../test/apply-schema");
   const { id } = await import("./ids");
-  const { ensureHouseholdFile, listSections, progressPercent } = await import("./household");
+  const { acknowledgePrivacy, ensureHouseholdFile, listSectionProgress, listSections } = await import("./household");
   const { CHECKLIST_SEED_TOTAL, SECTION_CHECKLISTS } = await import("./sections");
 
   async function makeUser(label: string) {
@@ -257,14 +257,83 @@ describe("ensureHouseholdFile", async () => {
     }
   });
 
-  it("progressPercent rounds complete/total and is 0 for empty or untouched", () => {
-    assert.equal(progressPercent([]), 0);
-    assert.equal(progressPercent([{ status: "not_started" }, { status: "in_progress" }]), 0);
-    assert.equal(progressPercent([{ status: "complete" }, { status: "not_started" }]), 50);
-    assert.equal(
-      progressPercent([{ status: "complete" }, { status: "not_started" }, { status: "not_started" }]),
-      33,
+  it("derives each section's status from its checklist and entries, in order", async () => {
+    const userId = await makeUser("progress");
+    const file = await ensureHouseholdFile(userId);
+    const secs = await listSections(file.id);
+    const byKey = Object.fromEntries(secs.map((s) => [s.sectionKey, s.id]));
+    const now = new Date();
+    // S2: every item resolved (mix of done and skipped) -> complete.
+    await db.update(schema.checklistItems).set({ status: "done" }).where(eq(schema.checklistItems.sectionId, byKey.S2));
+    const [firstS2] = await db
+      .select({ id: schema.checklistItems.id })
+      .from(schema.checklistItems)
+      .where(eq(schema.checklistItems.sectionId, byKey.S2))
+      .limit(1);
+    await db.update(schema.checklistItems).set({ status: "skipped" }).where(eq(schema.checklistItems.id, firstS2.id));
+    // S3: one item done -> in progress. S5: one entry, nothing checked -> in progress.
+    const [firstS3] = await db
+      .select({ id: schema.checklistItems.id })
+      .from(schema.checklistItems)
+      .where(eq(schema.checklistItems.sectionId, byKey.S3))
+      .limit(1);
+    await db.update(schema.checklistItems).set({ status: "done" }).where(eq(schema.checklistItems.id, firstS3.id));
+    await db.insert(schema.entries).values([
+      { id: id(), sectionId: byKey.S5, entryType: "account", label: "Example 401(k)", createdAt: now, updatedAt: now },
+      { id: id(), sectionId: byKey.S5, entryType: "note", label: "Rollover note", createdAt: now, updatedAt: now },
+    ]);
+
+    const rows = await listSectionProgress(file.id);
+    assert.deepEqual(
+      rows.map((r) => r.sectionKey),
+      secs.map((s) => s.sectionKey),
     );
-    assert.equal(progressPercent([{ status: "complete" }, { status: "complete" }]), 100);
+    const got = Object.fromEntries(rows.map((r) => [r.sectionKey, r]));
+    const s2Items = SECTION_CHECKLISTS.S2.length;
+    assert.deepEqual(
+      { ...got.S2, id: undefined },
+      { id: undefined, sectionKey: "S2", title: "Key contacts", items: s2Items, resolved: s2Items, entries: 0, status: "complete" },
+    );
+    assert.deepEqual([got.S3.resolved, got.S3.entries, got.S3.status], [1, 0, "in_progress"]);
+    assert.deepEqual([got.S5.resolved, got.S5.entries, got.S5.status], [0, 2, "in_progress"]);
+    assert.deepEqual([got.S1.items, got.S1.resolved, got.S1.entries, got.S1.status], [
+      SECTION_CHECKLISTS.S1.length,
+      0,
+      0,
+      "not_started",
+    ]);
+    assert.equal(typeof got.S1.items, "number");
+    assert.equal(rows.filter((r) => r.status === "complete").length, 1);
+  });
+
+  it("counts only the file's own sections", async () => {
+    const a = await ensureHouseholdFile(await makeUser("progress-a"));
+    const b = await ensureHouseholdFile(await makeUser("progress-b"));
+    const [bS1] = (await listSections(b.id)).filter((s) => s.sectionKey === "S1");
+    await db.update(schema.checklistItems).set({ status: "done" }).where(eq(schema.checklistItems.sectionId, bS1.id));
+    const rowsA = await listSectionProgress(a.id);
+    assert.equal(rowsA.length, 12);
+    assert.ok(rowsA.every((r) => r.status === "not_started"));
+    assert.equal((await listSectionProgress(b.id))[0].status, "complete");
+  });
+
+  it("acknowledgePrivacy stamps the file once and keeps the first time", async () => {
+    const file = await ensureHouseholdFile(await makeUser("ack"));
+    assert.equal(file.privacyAckAt, null);
+    const first = new Date("2026-09-29T09:00:00Z");
+    await acknowledgePrivacy(file.id, first);
+    await acknowledgePrivacy(file.id, new Date("2026-10-01T09:00:00Z"));
+    const [row] = await filesFor(file.userId);
+    assert.equal(row.privacyAckAt?.toISOString(), first.toISOString());
+  });
+
+  it("acknowledgePrivacy defaults to now and leaves other files alone", async () => {
+    const mine = await ensureHouseholdFile(await makeUser("ack-now"));
+    const other = await ensureHouseholdFile(await makeUser("ack-other"));
+    const before = Date.now() - 1000;
+    await acknowledgePrivacy(mine.id);
+    const [row] = await filesFor(mine.userId);
+    assert.ok(row.privacyAckAt!.getTime() >= before);
+    assert.equal((await filesFor(other.userId))[0].privacyAckAt, null);
   });
 });

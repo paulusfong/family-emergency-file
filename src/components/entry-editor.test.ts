@@ -13,6 +13,7 @@ describe("EntryEditor", async () => {
   const { EntryEditor } = await import("./entry-editor");
   const { ENTRY_TYPE_DEFS } = await import("@/lib/entry-fields");
   const { NETWORK_ERROR, SERVER_ERROR } = await import("@/lib/autosave");
+  const { CREDENTIAL_ERROR, FULL_NUMBER_ERROR, SECRET_WARNING } = await import("@/lib/privacy-warn");
   const { LostSaveNotice } = await import("./lost-save-notice");
   const { dismissLostSave, getLostSave } = await import("@/lib/lost-save");
   type Save = Parameters<typeof EntryEditor>[0]["save"];
@@ -212,6 +213,167 @@ describe("EntryEditor", async () => {
     assert.deepEqual(calls, []);
   });
 
+  // Paste warning. Read DOM state as strings/booleans (see hasAlert above).
+  const warningText = (name: string) => document.getElementById(`field-${name}-privacy`)?.textContent ?? null;
+  const confirmButton = () => screen.queryByRole("button", { name: "It’s not a secret, save it" });
+  const statusText = () => screen.getByRole("status").textContent;
+
+  it("holds the autosave on a password-like value until it is confirmed", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
+    fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint checking" } });
+    fireEvent.change(screen.getByLabelText("Access plan"), { target: { value: "Login Tr0ub4dor&3" } });
+    const plan = screen.getByLabelText("Access plan");
+    assert.equal(warningText("accessPlan"), `${SECRET_WARNING}It’s not a secret, save it`);
+    assert.equal(plan.getAttribute("data-privacy"), "warn");
+    assert.equal(plan.getAttribute("aria-invalid"), null);
+    assert.equal(plan.getAttribute("aria-describedby"), "field-accessPlan-hint field-accessPlan-privacy");
+    assert.equal(document.getElementById("field-accessPlan-privacy")?.getAttribute("role"), "alert");
+    assert.equal(statusText(), "Review the flagged field before this saves.");
+    fireEvent.submit(screen.getByRole("form"));
+    await wait(20);
+    assert.equal(calls.length, 0);
+
+    fireEvent.click(confirmButton()!);
+    assert.equal(warningText("accessPlan"), null);
+    assert.equal(plan.getAttribute("data-privacy"), null);
+    await wait(20);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].values, { label: "Joint checking", accessPlan: "Login Tr0ub4dor&3" });
+    assert.equal(statusText(), "All changes saved.");
+  });
+
+  it("re-checks a confirmed field when it is edited again", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
+    fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Joint checking" } });
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "PIN is 4821" } });
+    fireEvent.click(confirmButton()!);
+    await wait(20);
+    assert.equal(calls.length, 1);
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "PIN is 4822" } });
+    assert.match(warningText("notes")!, /looks like a password, PIN/);
+    await wait(20);
+    assert.equal(calls.length, 1);
+  });
+
+  it("blocks a full number with no way to confirm it, and saves once it is fixed", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
+    fireEvent.change(screen.getByLabelText("Account nickname (required)"), { target: { value: "Card" } });
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "4111 1111 1111 1111" } });
+    const notes = screen.getByLabelText("Notes");
+    assert.equal(warningText("notes"), FULL_NUMBER_ERROR);
+    assert.equal(confirmButton() === null, true);
+    assert.equal(notes.getAttribute("aria-invalid"), "true");
+    assert.equal(notes.getAttribute("data-privacy"), "block");
+    assert.equal(notes.getAttribute("aria-describedby"), "field-notes-privacy");
+    fireEvent.blur(notes);
+    await wait(20);
+    assert.equal(calls.length, 0);
+
+    fireEvent.change(notes, { target: { value: "Card ends 1111" } });
+    assert.equal(warningText("notes"), null);
+    await wait(20);
+    assert.deepEqual(calls[0].values, { label: "Card", notes: "Card ends 1111" });
+  });
+
+  it("QA-1: blocks a card number typed into Phone or Email, with no way to confirm it", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "c-1" }));
+    mount({ save, type: "contact" });
+    fireEvent.change(screen.getByLabelText("Name (required)"), { target: { value: "Pat" } });
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "4111111111111111" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "4111111111111111@example.com" } });
+    assert.equal(warningText("phone"), FULL_NUMBER_ERROR);
+    assert.equal(warningText("email"), FULL_NUMBER_ERROR);
+    assert.equal(confirmButton() === null, true);
+    fireEvent.blur(screen.getByLabelText("Phone"));
+    await wait(20);
+    assert.equal(calls.length, 0);
+    assert.equal(statusText(), "Review the flagged field before this saves.");
+
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "+1 (404) 555-0199" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "pat@example.com" } });
+    assert.equal(warningText("phone"), null);
+    assert.equal(warningText("email"), null);
+    await wait(20);
+    assert.deepEqual(calls[0].values, { label: "Pat", phone: "+1 (404) 555-0199", email: "pat@example.com" });
+  });
+
+  it("flags the label field too, and keeps the fill-in prompt when the label is empty", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save });
+    const label = screen.getByLabelText("Account nickname (required)");
+    fireEvent.change(label, { target: { value: "P@ssw0rd99" } });
+    assert.equal(warningText("label"), `${SECRET_WARNING}It’s not a secret, save it`);
+    assert.equal(label.getAttribute("aria-describedby"), "field-label-privacy");
+    fireEvent.change(label, { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "password: x1" } });
+    assert.equal(statusText(), "Fill in “Account nickname” to start saving.");
+    await wait(20);
+    assert.deepEqual(calls, []);
+  });
+
+  it("treats values loaded from a saved entry as already confirmed", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "e-1" }));
+    mount({ save, entryId: "e-1", initialValues: { label: "Family email", notes: "Tr0ub4dor&3" } });
+    assert.equal(warningText("notes"), null);
+    fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Example Mail" } });
+    await wait(20);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].values, { label: "Family email", notes: "Tr0ub4dor&3", institution: "Example Mail" });
+  });
+
+  it("blocks a labelled credential with no way to confirm it", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "new-1" }));
+    mount({ save, type: "access_plan" });
+    fireEvent.change(screen.getByLabelText("Account or service (required)"), { target: { value: "Family email" } });
+    const login = screen.getByLabelText("Where the login lives");
+    fireEvent.change(login, { target: { value: "password: Tr0ub4dor&3" } });
+    assert.equal(warningText("loginLocation"), CREDENTIAL_ERROR);
+    assert.equal(confirmButton() === null, true);
+    assert.equal(login.getAttribute("aria-invalid"), "true");
+    assert.equal(login.getAttribute("data-privacy"), "block");
+    fireEvent.blur(login);
+    fireEvent.submit(screen.getByRole("form"));
+    await wait(20);
+    assert.equal(calls.length, 0);
+    assert.equal(statusText(), "Review the flagged field before this saves.");
+  });
+
+  it("does not re-save a stored value that is now blocked, even when another field changes", async () => {
+    const { calls, save } = recorder(() => ({ ok: true, entryId: "e-1" }));
+    mount({ save, entryId: "e-1", initialValues: { label: "Family email", notes: "password: hunter2" } });
+    assert.equal(warningText("notes"), CREDENTIAL_ERROR);
+    fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Example Mail" } });
+    await wait(20);
+    assert.equal(calls.length, 0);
+  });
+
+  it("never sends a blocked value, even when it is typed while the first draft save is in flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const calls: Input[] = [];
+    const save: Save = async (input) => {
+      calls.push(structuredClone(input));
+      await gate;
+      return { ok: true, entryId: "new-1" };
+    };
+    mount({ save, type: "access_plan" });
+    fireEvent.change(screen.getByLabelText("Account or service (required)"), { target: { value: "Family email" } });
+    await wait(20);
+    assert.equal(calls.length, 1);
+    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "PIN=4821" } });
+    fireEvent.submit(screen.getByRole("form"));
+    await act(async () => release());
+    await wait(20);
+    assert.deepEqual(
+      calls.map((c) => c.values),
+      [{ label: "Family email" }],
+    );
+    assert.equal(statusText(), "Review the flagged field before this saves.");
+  });
+
   it("does not rewrite the URL when a new entry's flushed save lands after unmount", async () => {
     const { calls, save } = recorder(() => ({ ok: true, entryId: "new-9" }));
     const view = mount({ save });
@@ -277,7 +439,8 @@ describe("EntryEditor", async () => {
       render(React.createElement(LostSaveNotice));
       assert.equal(notice(), "");
       const view = mount({ type: "contact", save, entryId: "c-7", initialValues: { label: "Pat" } });
-      fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "4045550123" } });
+      // Only the server rejects this one (the phone format), so the save is sent.
+      fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(404) 555-01" } });
       view.unmount();
       await wait(20);
       assert.equal(calls.length, 1);
@@ -347,11 +510,12 @@ describe("EntryEditor", async () => {
         ok: false,
         status: 400,
         error: "Some fields need a fix before this can save.",
-        fieldErrors: { institution: "This looks like a full account, card, or ID number." },
+        fieldErrors: { institution: "Keep this under 200 characters." },
       }));
       mount({ save, strict: true, entryId: "e-1", initialValues: { label: "Joint" } });
       assert.equal(status(), SAVED);
-      fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Bank 4111 1111 1111 1111" } });
+      // A value the editor allows, rejected by the (mocked) server.
+      fireEvent.change(screen.getByLabelText("Institution"), { target: { value: "Example Bank, Main St" } });
       await wait(20);
       assert.equal(calls.length, 1);
       assert.equal(status(), "Not saved.");

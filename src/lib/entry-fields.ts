@@ -99,6 +99,29 @@ export const ENTRY_TYPE_DEFS: Record<EntryType, EntryTypeDef> = {
       NOTES,
     ],
   },
+  access_plan: {
+    type: "access_plan",
+    title: "Access plan",
+    labelField: { label: "Account or service", placeholder: "Example: Family email" },
+    fields: [
+      { name: "provider", label: "Provider", kind: "text", placeholder: "Example Mail, Example Mobile, Example Cloud" },
+      {
+        name: "loginLocation",
+        label: "Where the login lives",
+        kind: "text",
+        placeholder: "Family vault in Example Password Manager",
+        hint: "Name the password manager or sealed envelope that holds it. Never the password itself.",
+      },
+      {
+        name: "recoveryPlan",
+        label: "Recovery and emergency access",
+        kind: "textarea",
+        hint: "Who can get in and how: the emergency-access contact, and where the recovery kit or backup codes are kept.",
+      },
+      { ...WHO_TO_CALL, placeholder: "The provider's support line or a trusted helper" },
+      NOTES,
+    ],
+  },
   note: {
     type: "note",
     title: "Note",
@@ -194,6 +217,7 @@ export type ValidatedEntry =
  * Server-side validation. Accepts only the known fields for the type, trims
  * them, drops blanks, and rejects block-level privacy findings (full numbers
  * and labelled credentials) in every field, phone and email included.
+ * Warn-level findings are allowed.
  */
 export function validateEntry(type: EntryType, raw: unknown): ValidatedEntry {
   const input = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -270,6 +294,10 @@ export function entrySummary(type: EntryType, payload: EntryValues) {
       break;
     case "document_location":
       add(payload.whereToFind);
+      break;
+    case "access_plan":
+      add(payload.provider);
+      add(payload.loginLocation);
       break;
     case "note":
       if (payload.notes) {

@@ -85,6 +85,6 @@ describe("schema", () => {
       ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12"],
     );
     assert.deepEqual([...SECTION_STATUS], ["not_started", "in_progress", "complete"]);
-    assert.deepEqual([...ENTRY_TYPES], ["contact", "account", "policy", "document_location", "note"]);
+    assert.deepEqual([...ENTRY_TYPES], ["contact", "account", "policy", "document_location", "access_plan", "note"]);
   });
 });
