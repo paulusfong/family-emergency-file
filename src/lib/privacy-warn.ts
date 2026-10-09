@@ -218,10 +218,12 @@ const TIGHT_RUN_RE = new RegExp(`[0-9]+(?:${CARD_GAP}[0-9]+)*`, "g");
  * A 14-digit card printed 4-6-4 (Diners Club). Its last ten digits read as a
  * phone ("3845 201735 4845"), and four digits before a phone are a street
  * number, so the layout is checked before phones are set aside. The same
- * separator comes between both pairs of groups, as printed on a card; a year
- * before a phone written 6-4 ("2019 770365-0135") is not one.
+ * separator (any run of characters that are not letters or digits) comes
+ * between both pairs of groups, as printed on a card ("3845 201735 4845",
+ * "3018 - 207780 - 4961", "3018/207780/4961"); a year before a phone written
+ * 6-4 ("2019 770365-0135") is not one.
  */
-const DINERS_RE = new RegExp(`(?<![0-9])[0-9]{4}(${CARD_GAP})[0-9]{6}\\1[0-9]{4}`, "g");
+const DINERS_RE = new RegExp(`(?<![0-9])[0-9]{4}([^\\p{L}0-9]+)[0-9]{6}\\1[0-9]{4}`, "gu");
 const DIGIT_CHAR_RE = /[0-9]/;
 const LETTER_RE = /\p{L}/u;
 const MIN_TAIL = 5;
@@ -369,13 +371,27 @@ function maskWellFormed(text: string) {
 }
 
 /**
+ * Text with no letters (digits and separators only) has nothing that says a
+ * group of digits is a ZIP, a street number, or an extension rather than part
+ * of a card, so there the card check is the one from before phones were set
+ * aside (2e7c80e): every loose run of the text as written, phones included,
+ * is checked for a 13-19 digit Luhn number. Whatever that check blocked in
+ * such text stays blocked, however the groups are separated
+ * ("3018 - 207780 - 4961", "47; 3  (612) 665-8926").
+ */
+function legacyLetterFreeBlock(text: string) {
+  return !LETTER_RE.test(text) && holdsCard(text);
+}
+
+/**
  * Full account, card, or SSN shapes, the same in every field (phone and
  * email included), in order:
  * 1. a formatted phone that hides a card (see Phones above), or a Luhn-valid
  *    card printed 4-6-4; formatted valid phones are then set aside for the
  *    checks below;
  * 2. any other 13-19 digit loose run that passes Luhn, also tried without a
- *    leading country code "1" ("1 4111 1111 1111 1111");
+ *    leading country code "1" ("1 4111 1111 1111 1111"); in text with no
+ *    letters, phones are not set aside for this (legacyLetterFreeBlock);
  * 3. an SSN layout (3-2-4 digits; any separators, single letters included);
  * 4. once well-formed tokens are also set aside (dates, ZIP+4s, amounts, year
  *    lists, VINs; none of them Luhn-valid), any run of 9+ digits. A phone
@@ -384,7 +400,7 @@ function maskWellFormed(text: string) {
 export function findFullNumber(raw: string): PrivacyReason | null {
   const text = normalizeForScan(raw);
   const { masked, hidesCard } = setPhonesAside(text);
-  if (hidesCard || holdsCard(masked)) return "full_number";
+  if (hidesCard || holdsCard(masked) || legacyLetterFreeBlock(text)) return "full_number";
   if (SSN_RE.test(text)) return "ssn";
   const run = digitRuns(maskWellFormed(masked)).find((d) => d.length >= MIN_BARE_RUN);
   if (run === undefined) return null;
@@ -397,31 +413,33 @@ export function looksLikeFullNumber(text: string) {
 }
 
 /*
- * Labels and values. A label counts when a separator comes right after it:
- * ":" or "=" (after spaces or "#": "password : x", "PIN #: 1234"), or a dash
- * with a space on one side ("password - x", "password -- x", "Password — x",
- * "password -> x"; not "password-protected"). The whole run of separators
- * after it is skipped ("password:: x", "password := x", "password => x",
- * "password: - x", "password: * x", "Password: — x") and the first token
- * after that is the value, so punctuation can never stand in for one.
- * Labels are matched after foldConfusables, so "раssword" (Cyrillic р and а)
- * is "password".
+ * Labels and values. Labels are matched after foldForLabels: look-alike
+ * letters become Latin ("раssword" with Cyrillic р and а is "password"), and
+ * look-alike colons, equals signs, dashes, and arrows become ":", "=", "-",
+ * and "→". A label counts when a separator comes right after it: ":" or "="
+ * (after any whitespace, line breaks included, or "#": "password : x",
+ * "password\n: x", "PIN #: 1234"), an arrow ("password → x", "password => x"),
+ * or a dash with a space on one side ("password - x", "password -- x",
+ * "Password — x", "password- x"; not "password-protected"). The value is the first token
+ * after it with a letter or a digit in it: everything with neither
+ * (punctuation, symbols, spaces) is skipped, so "password: / x",
+ * "password: ! x", and "password:: x" all read "x", and punctuation can never
+ * stand in for a value.
  */
-const DASHES = "\\-\\u2010-\\u2015\\u2212";
-const SEPARATORS = `\\s:=#*.,;~|>${DASHES}`;
-const COLON_MARK = "[ \\t#]*[:=]";
-const DASH_MARK = `[ \\t]+[${DASHES}]|[${DASHES}]+>?[ \\t]`;
+const COLON_MARK = "[\\s#]*[:=]";
+const ARROW_MARK = "\\s*\u2192";
+const DASH_MARK = "[ \\t]+-|-[ \\t]";
 const labelledValueRe = (label: string, mark: string) =>
-  new RegExp(`${label}(?=${mark})[${SEPARATORS}]*([^${SEPARATORS}]\\S*)`, "gi");
+  new RegExp(`${label}(?=${mark})[^\\p{L}\\p{N}]*([\\p{L}\\p{N}]\\S*)`, "giu");
 
 /**
  * Labels that name a credential outright. A value after one is blocked,
  * unless it is a pointer ("Password: in the family vault").
  */
-const CREDENTIAL_LABELS =
-  "password|passwd|passcode|pin(?: code| number)?|secret|security answers?|(?:2fa )?backup codes?|2fa codes?";
+const PIN = "pin(?:[ -]?(?:code|number))?";
+const CREDENTIAL_LABELS = `password|passwd|passcode|${PIN}|secret|security answers?|(?:2fa )?backup codes?|2fa codes?`;
 const CREDENTIAL_RES = [
-  labelledValueRe(`\\b(?:${CREDENTIAL_LABELS})`, `${COLON_MARK}|${DASH_MARK}`),
+  labelledValueRe(`\\b(?:${CREDENTIAL_LABELS})`, `${COLON_MARK}|${ARROW_MARK}|${DASH_MARK}`),
   /*
    * "Pass: x", but only with ":" or "=" and with no word just before it:
    * "Boarding pass: Delta app", "Season pass - June", "Passport: x", and
@@ -430,9 +448,8 @@ const CREDENTIAL_RES = [
   labelledValueRe("(?<![a-z][ \\t]*)\\bpass", COLON_MARK),
 ];
 /** Softer labels, and any label with "#" alone, only warn. */
-const SECRET_LABELS =
-  "password|passwd|pwd|passcode|passphrase|pin(?: code| number)?|secret|security (?:code|answer)|seed phrase|recovery (?:phrase|code)|backup codes?|cvv|cvc|otp";
-const LABEL_WITH_VALUE_RE = labelledValueRe(`\\b(?:${SECRET_LABELS})`, `[ \\t]*[:=#]|${DASH_MARK}`);
+const SECRET_LABELS = `password|passwd|pwd|passcode|passphrase|${PIN}|secret|security (?:code|answer)|seed phrase|recovery (?:phrase|code)|backup codes?|cvv|cvc|otp`;
+const LABEL_WITH_VALUE_RE = labelledValueRe(`\\b(?:${SECRET_LABELS})`, `[\\s#]*[:=#]|${ARROW_MARK}|${DASH_MARK}`);
 /** "Recovery codes: in the fire safe" is a pointer, which is what we want. */
 const NOT_A_VALUE = new Set([
   "in", "at", "on", "inside", "kept", "stored", "see", "ask", "printed",
@@ -442,6 +459,8 @@ const NOT_A_VALUE = new Set([
 const LABEL_IS_RE = new RegExp(`\\b(?:${SECRET_LABELS})\\s+(?:is|was)\\s+(["']?)(\\S+)`, "i");
 const CODE_DIGITS_RE = /\b(?:pin\s*#?\s*\d{4,8}|cv[vc]2?\s*#?\s*\d{3,4})\b/i;
 
+/** Punctuation and symbols after a value ("kept.", "n/a»"); a value always starts with a letter or digit. */
+const TRAILING_PUNCT_RE = /[\p{P}\p{S}]+$/u;
 const EDGE_PUNCT_RE = /^[("'[{<]+|[)"'\]}>.,;:!?]+$/g;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/;
 const URL_RE = /^(?:https?:\/\/|www\.)/i;
@@ -482,10 +501,7 @@ export function looksLikeSecretToken(raw: string) {
 
 /** True when some "label: value" match carries a real value, not a pointer or blank. */
 function hasLabelledValue(re: RegExp, text: string) {
-  return [...text.matchAll(re)].some(([, raw]) => {
-    const value = raw.replace(EDGE_PUNCT_RE, "").toLowerCase();
-    return /[\p{L}\p{N}]/u.test(value) && !NOT_A_VALUE.has(value);
-  });
+  return [...text.matchAll(re)].some(([, raw]) => !NOT_A_VALUE.has(raw.replace(TRAILING_PUNCT_RE, "").toLowerCase()));
 }
 
 function hasSecretLabel(text: string) {
@@ -498,12 +514,20 @@ function hasSecretLabel(text: string) {
 }
 
 /**
- * Cyrillic and Greek letters that look like Latin ones, each above the Latin
- * letter it passes for (plus Latin alpha and dotless i). One code unit for
+ * Letters that look like Latin ones, each above the Latin letter it passes
+ * for: Cyrillic and Greek look-alikes, Latin small capitals ("ᴘɪɴ"), and a
+ * few other Latin letters (alpha, dotless i and j, script g, Latin iota and
+ * upsilon, wynn). Text is NFKC-normalized first, so a lunate sigma ϲ arrives
+ * as a final sigma ς and a rho symbol ϱ as ρ. Every letter of every label has its look-alikes here
+ * ("pinсode" with a Cyrillic с, "secreτ" with a Greek tau). One code unit for
  * one, so offsets do not move.
  */
-const CONFUSABLES = "асԁеһіјкорԛѕԝхуАВСЕНІЈКМОРЅТХԜαικνορυΑΒΕΖΗΙΚΜΝΟΡΤΥΧɑı";
-const LOOKS_LIKE = "acdehijkopqswxyABCEHIJKMOPSTXWaikvopuABEZHIKMNOPTYXai";
+const CONFUSABLES =
+  "асԁеһіјкорԛѕԝхуАВСЕНІЈКМОРЅТХԜαικνορυΑΒΕΖΗΙΚΜΝΟΡΤΥΧɑı" +
+  "тгмнүҮҽѵѴѡӏӀЬτςησωγχϝϜϳɡȷɩʋƿᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘʀꜱᴛᴜᴠᴡʏᴢ";
+const LOOKS_LIKE =
+  "acdehijkopqswxyABCEHIJKMOPSTXWaikvopuABEZHIKMNOPTYXai" +
+  "trmhyYevVwiIbtcnowyxfFjgjiupabcdefghijklmnoprstuvwyz";
 const CONFUSABLE_RE = new RegExp(`[${CONFUSABLES}]`, "g");
 
 /** Each look-alike letter in CONFUSABLES replaced by the Latin letter it passes for. */
@@ -511,12 +535,48 @@ export function foldConfusables(text: string) {
   return text.replace(CONFUSABLE_RE, (ch) => LOOKS_LIKE[CONFUSABLES.indexOf(ch)]);
 }
 
+/*
+ * Separators that look like ":", "=", "-", or an arrow. NFKC has already made
+ * fullwidth and small forms ASCII ("：", "＝", "－"); these have no such
+ * mapping. Colons: ratio ∶, proportion ∷, modifier-letter and IPA colons
+ * ꞉ ˸ ː, two-dot punctuation ⁚, Armenian ։, Hebrew ׃, Syriac ܃ ܄ ܅ ܆ ܇,
+ * Mongolian ᠄, Z-notation ⦂, Lisu ꓽ, Bamum ꛴, Ethiopic ፡ ፥, runic ᛬.
+ * Equals: ≔ ≕ ꞊ ═. Dashes: every dash punctuation character (\p{Pd}: ‐ – —
+ * ― ⸺ 〜 ...), the minus signs − ˗ ⁒ ➖, hyphen bullet ⁃, swung dash ⁓, dash
+ * with left upturn ⹃, the horizontal lines ⎯ ⏤, and the light and heavy
+ * horizontal box-drawing lines (─ ━ ┄ ╌ ╴ ...). Arrows: the Arrows,
+ * Supplemental Arrows-A/B/C, and Miscellaneous Symbols and Arrows blocks, the
+ * dingbat arrows (➔ ... ➾), the right-pointing triangles ▶ ▷ ▸ ▹ ► ▻, and
+ * "->" / "-->" typed out.
+ */
+const COLON_LIKE_RE = /[∶∷꞉˸ː⁚։׃܃܄܅܆܇᠄⦂ꓽ꛴፡፥᛬]/g;
+const EQUALS_LIKE_RE = /[≔≕꞊═]/g;
+const DASH_LIKE_RE = /[\p{Pd}\u2212\u02D7\u2043\u2052\u2053\u2796\u2E43\u23AF\u23E4\u2500\u2501\u2504\u2505\u2508\u2509\u254C\u254D\u2574\u2576\u2578\u257A\u257C\u257E]/gu;
+const ARROW_RE = /-+>|[\u2190-\u21FF\u27F0-\u27FF\u2794\u2798-\u27BF\u2900-\u297F\u2B00-\u2BFF\u25B6-\u25BB\u{1F800}-\u{1F8FF}]/gu;
+
+/**
+ * A punctuation mark or symbol that NFKC would turn into letters or digits
+ * ("㏌" into "in", "№" into "No", "℡" into "TEL") is a space when labels are
+ * read: a symbol never stands in for a value or a pointer word.
+ */
+const SYMBOL_RE = /[\p{P}\p{S}]/gu;
+const LETTER_OR_DIGIT_RE = /[\p{L}\p{N}]/u;
+
+function blankWordSymbols(text: string) {
+  return text.replace(SYMBOL_RE, (ch) => (LETTER_OR_DIGIT_RE.test(ch.normalize("NFKC")) ? " " : ch));
+}
+
+/** Look-alike colons, equals signs, dashes, and arrows written ":", "=", "-", and "→". */
+export function foldSeparators(text: string) {
+  return text.replace(COLON_LIKE_RE, ":").replace(EQUALS_LIKE_RE, "=").replace(DASH_LIKE_RE, "-").replace(ARROW_RE, "\u2192");
+}
+
 /** The strongest finding for a piece of free text, or null when it looks fine. */
 export function scanText(raw: string): PrivacyFinding | null {
   const full = findFullNumber(raw);
   if (full) return { level: "block", reason: full, message: FULL_NUMBER_ERROR };
   const text = normalizeForScan(raw);
-  const labels = foldConfusables(text);
+  const labels = foldSeparators(foldConfusables(normalizeForScan(blankWordSymbols(raw))));
   if (CREDENTIAL_RES.some((re) => hasLabelledValue(re, labels))) {
     return { level: "block", reason: "credential", message: CREDENTIAL_ERROR };
   }

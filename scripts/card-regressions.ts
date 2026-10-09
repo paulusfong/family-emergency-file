@@ -13,6 +13,17 @@
  *   Amex 4-6-5, 13-digit 4-4-5, Diners 14-digit 4-6-4, unspaced), with a
  *   space, "-", or "." between groups, alone, after a label, in a sentence,
  *   and next to a phone; every one must be blocked (QA rule 1);
+ * - separator-layouts: 60,000 Luhn-valid cards (13-19 digits) cut into 2-6
+ *   random groups, joined by separators from SEPARATORS (single characters,
+ *   runs, mixed, with and without spaces around them: " - ", "--", "/", ",",
+ *   ";", "_", "(", ") ", "\n", ...), one kind per card or a different one per
+ *   gap (seed 13);
+ * - separator-phone-layouts: 60,000 Luhn-valid cards (13-19 digits) with a
+ *   valid North American phone inside them, printed as a phone in one of six
+ *   formats, the other digits cut into groups and joined the same way (QA's
+ *   R3phone shape: "47; 3  (612) 665-8926", "4177983   510 - 878");
+ * - diners-gaps: Diners 4-6-4 cards with each of SEPARATORS between the
+ *   groups, alone ("3018 - 207780 - 4961");
  * - any --probes file: a JSON object of key -> string (or { v: string }),
  *   such as QA's probes8.json from gen8.
  * An input is a regression when the base blocked it and the working tree does
@@ -94,6 +105,81 @@ const CARD_LAYOUTS: Record<string, (c: string) => string> = {
 
 type Input = { set: string; kind: string; v: string };
 
+/** Separators between card groups: single characters, runs, and the forms QA found ("4177983   510 - 878"). */
+const SEPARATORS = [
+  " ", "  ", "   ", "          ", "\t", " \t ", "-", ".", " - ", "--", "-- ", " -- ", " -  - ", "/", " / ", "//",
+  ",", ", ", ",,", " , ", ";", "; ", " ; ", "_", "__", " _ ", "(", " (", ") ", ")", ",(", " -  - (", " . ", "..",
+  "|", " | ", " · ", "\n", " \n ", "\r\n", "#", " #", "*", "~", "+", "'", "\"", ":", ": ", "=", "\u2014", " \u2013 ",
+  "\u00a0", "\u00a0\u00a0", "\u3000", "\u2009", "\u3164",
+];
+const pick = <T>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length)];
+
+/** Cuts digits into 1-`max` groups of random sizes (at least one digit each). */
+function cut(d: string, max: number) {
+  if (d === "") return [];
+  const k = Math.min(d.length, 1 + Math.floor(rnd() * max));
+  const at = new Set<number>();
+  while (at.size < k - 1) at.add(1 + Math.floor(rnd() * (d.length - 1)));
+  const cuts = [0, ...[...at].sort((a, b) => a - b), d.length];
+  return cuts.slice(1).map((end, i) => d.slice(cuts[i], end));
+}
+
+/** Joins parts with one separator kind throughout, or a random one per gap. */
+function join(parts: string[], mixed: boolean) {
+  const one = pick(SEPARATORS);
+  return parts.reduce((out, p, i) => (i === 0 ? p : out + (mixed ? pick(SEPARATORS) : one) + p), "");
+}
+
+function* separatorInputs(): Generator<Input> {
+  seed = 13;
+  for (let i = 0; i < 60000; i++) {
+    const n = 13 + (i % 7);
+    const mixed = i % 3 === 0;
+    yield { set: "separator-layouts", kind: `${n}/${mixed ? "mixed" : "one-kind"}`, v: join(cut(card(n), 6), mixed) };
+  }
+}
+
+const PHONE_FORMATS: ((p: string) => string)[] = [
+  (p) => `(${p.slice(0, 3)}) ${p.slice(3, 6)}-${p.slice(6)}`,
+  (p) => `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6)}`,
+  (p) => `${p.slice(0, 3)}.${p.slice(3, 6)}.${p.slice(6)}`,
+  (p) => `${p.slice(0, 3)} ${p.slice(3, 6)} ${p.slice(6)}`,
+  (p) => `(${p.slice(0, 3)})${p.slice(3, 6)}-${p.slice(6)}`,
+  (p) => `${p.slice(0, 3)}/${p.slice(3, 6)}-${p.slice(6)}`,
+];
+
+/**
+ * A Luhn-valid card of n digits with a North American number (area code and
+ * exchange starting 2-9) at a random offset, printed as a phone.
+ */
+function* separatorPhoneInputs(): Generator<Input> {
+  seed = 17;
+  for (let i = 0; i < 60000; i++) {
+    const n = 13 + (i % 7);
+    const off = Math.floor(rnd() * (n - 10 + 1));
+    const phone = `${2 + Math.floor(rnd() * 8)}${digits(2)}${2 + Math.floor(rnd() * 8)}${digits(6)}`;
+    let head = digits(off);
+    let tail = digits(n - 10 - off);
+    // The check digit goes last: in the tail, or else the first head digit (which has no fixed value).
+    if (tail) tail = tail.slice(0, -1) + checkDigit(head + phone + tail.slice(0, -1));
+    else if (head) head = [..."0123456789"].find((d) => passesLuhn(d + head.slice(1) + phone))! + head.slice(1);
+    else continue;
+    const mixed = i % 3 === 0;
+    const parts = [...cut(head, 3), pick(PHONE_FORMATS)(phone), ...cut(tail, 3)];
+    yield { set: "separator-phone-layouts", kind: `${n}/${mixed ? "mixed" : "one-kind"}`, v: join(parts, mixed) };
+  }
+}
+
+function* dinersGapInputs(): Generator<Input> {
+  seed = 19;
+  for (const sep of SEPARATORS) {
+    for (let i = 0; i < 50; i++) {
+      const c = card(14, pick(["36", "38", "30", "300", "305"]));
+      yield { set: "diners-gaps", kind: JSON.stringify(sep), v: groups(c, [4, 6, 4], sep) };
+    }
+  }
+}
+
 function* cardLayoutInputs(): Generator<Input> {
   seed = 7;
   for (let i = 0; i < 10000; i++) {
@@ -170,7 +256,14 @@ async function main() {
   const regressions: (Input & { bucket: string; luhn: boolean; old: string | null })[] = [];
   const rule1: Record<string, { n: number; leaks: number; example?: string }> = {};
   const probeGroups: Record<string, Record<string, number>> = {};
-  const sources = [cardLayoutInputs(), issuerInputs(), ...opt("--probes").map(probeInputs)];
+  const sources = [
+    cardLayoutInputs(),
+    issuerInputs(),
+    separatorInputs(),
+    separatorPhoneInputs(),
+    dinersGapInputs(),
+    ...opt("--probes").map(probeInputs),
+  ];
   for (const source of sources) {
     for (const input of source) {
       const old = oldFn(input.v);
@@ -193,7 +286,7 @@ async function main() {
           r.example ??= input.v;
         }
       }
-      if (input.set !== "card-layouts" && input.set !== "issuer-layouts") {
+      if (input.set.endsWith(".json")) {
         const g = (probeGroups[`${input.set} ${input.kind}`] ??= { n: 0, allowedNow: 0, allowedBase: 0 });
         g.n++;
         if (now === null) g.allowedNow++;
@@ -251,7 +344,10 @@ async function main() {
   for (const [p, r] of Object.entries(fp)) {
     console.log(`  ${p.padEnd(38)} ${String(r.now).padStart(4)} / ${r.n}  (base ${r.base})  ${r.example ? JSON.stringify(r.example) : ""}`);
   }
+  const sum = (f: "n" | "now" | "base") => Object.values(fp).reduce((t, r) => t + r[f], 0);
+  console.log(`  ${"total".padEnd(38)} ${String(sum("now")).padStart(4)} / ${sum("n")}  (base ${sum("base")})`);
 
+  console.log(`\nSeparators generated: ${SEPARATORS.length} kinds (${JSON.stringify(SEPARATORS)}).`);
   const rule2 = regressions.filter((r) => r.luhn && r.bucket === "digits-and-separators").length;
   console.log(`\nQA rule 2: ${rule2} digits-and-separators Luhn regressions. QA rule 1: ${rule1Leaks} leaks.`);
   if (out) fs.writeFileSync(out, JSON.stringify({ base, tally, regressions, rule1, probeGroups, fp }, null, 1));
