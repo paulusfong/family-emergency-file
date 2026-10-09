@@ -420,17 +420,29 @@ export function looksLikeFullNumber(text: string) {
  * (after any whitespace, line breaks included, or "#": "password : x",
  * "password\n: x", "PIN #: 1234"), an arrow ("password → x", "password => x"),
  * or a dash with a space on one side ("password - x", "password -- x",
- * "Password — x", "password- x"; not "password-protected"). The value is the first token
- * after it with a letter or a digit in it: everything with neither
+ * "Password — x", "password- x"; not "password-protected"). The value starts
+ * at the first letter or digit after it: everything with neither
  * (punctuation, symbols, spaces) is skipped, so "password: / x",
  * "password: ! x", and "password:: x" all read "x", and punctuation can never
- * stand in for a value.
+ * stand in for a value. The value is read from the text with look-alike
+ * letters left as typed (see readsAsValue), so "іn" with a Cyrillic і is not
+ * the pointer word "in".
  */
 const COLON_MARK = "[\\s#]*[:=]";
 const ARROW_MARK = "\\s*\u2192";
 const DASH_MARK = "[ \\t]+-|-[ \\t]";
-const labelledValueRe = (label: string, mark: string) =>
-  new RegExp(`${label}(?=${mark})[^\\p{L}\\p{N}]*([\\p{L}\\p{N}]\\S*)`, "giu");
+/** Every character that ends a line: \n, \r, \v, \f, NEL, and the Unicode line and paragraph separators. */
+const BREAKS = "\\n\\r\\v\\f\\u0085\\u2028\\u2029";
+/** No letter or digit before this point on its line. */
+const STARTS_LINE = `(?<![\\p{L}\\p{N}][^${BREAKS}]*)`;
+/**
+ * At most one word before this point on its line ("Bank PIN", "Gmail
+ * password"), with nothing but spaces or symbols around it.
+ */
+const STARTS_LINE_OR_ONE_WORD = `(?<=(?:^|[${BREAKS}])[^\\p{L}\\p{N}${BREAKS}]*(?:[\\p{L}\\p{N}]+[^\\p{L}\\p{N}${BREAKS}]+)?)`;
+/** Where the value starts (group 1, captured ahead so the next label is still matched): the first letter or digit. */
+const VALUE = "[^\\p{L}\\p{N}]*(?=([\\p{L}\\p{N}][\\s\\S]*))";
+const labelledValueRe = (label: string, mark: string) => new RegExp(`${label}(?=${mark})${VALUE}`, "giud");
 
 /**
  * Labels that name a credential outright. A value after one is blocked,
@@ -438,29 +450,178 @@ const labelledValueRe = (label: string, mark: string) =>
  */
 const PIN = "pin(?:[ -]?(?:code|number))?";
 const CREDENTIAL_LABELS = `password|passwd|passcode|${PIN}|secret|security answers?|(?:2fa )?backup codes?|2fa codes?`;
-const CREDENTIAL_RES = [
-  labelledValueRe(`\\b(?:${CREDENTIAL_LABELS})`, `${COLON_MARK}|${ARROW_MARK}|${DASH_MARK}`),
+/** The value, and the label it follows (as matched). */
+type ValueTest = (value: string, label: string) => boolean;
+const CREDENTIAL_CHECKS: [RegExp, ValueTest][] = [
+  [labelledValueRe(`\\b(?:${CREDENTIAL_LABELS})`, `${COLON_MARK}|${ARROW_MARK}|${DASH_MARK}`), readsAsValue],
   /*
    * "Pass: x", but only with ":" or "=" and with no word just before it:
    * "Boarding pass: Delta app", "Season pass - June", "Passport: x", and
-   * "bypass: x" are ordinary text.
+   * "bypass: x" are ordinary text. With an arrow or a dash, only when it
+   * starts its line ("pass - x").
    */
-  labelledValueRe("(?<![a-z][ \\t]*)\\bpass", COLON_MARK),
+  [labelledValueRe("(?<![a-z][ \\t]*)\\bpass", COLON_MARK), readsAsValue],
+  [labelledValueRe(`${STARTS_LINE}\\bpass`, `${ARROW_MARK}|${DASH_MARK}`), readsAsValue],
+  /*
+   * A label alone on its line, or after one word ("Bank PIN", "Gmail
+   * password"), the value on a later line, with or without a dash before it
+   * ("Password\n- hunter2", "PIN\n4821", "Bank PIN\n- 4821"). Any line break
+   * counts (see BREAKS). With no separator this is also how a heading reads
+   * ("Reset password\n- call the bank"), so only a secret-shaped word on the
+   * value's line blocks it.
+   */
+  [
+    labelledValueRe(`${STARTS_LINE_OR_ONE_WORD}\\b(?:${CREDENTIAL_LABELS})`, `[^\\p{L}\\p{N}${BREAKS}]*[${BREAKS}]`),
+    hasSecretWord,
+  ],
 ];
 /** Softer labels, and any label with "#" alone, only warn. */
 const SECRET_LABELS = `password|passwd|pwd|passcode|passphrase|${PIN}|secret|security (?:code|answer)|seed phrase|recovery (?:phrase|code)|backup codes?|cvv|cvc|otp`;
 const LABEL_WITH_VALUE_RE = labelledValueRe(`\\b(?:${SECRET_LABELS})`, `[\\s#]*[:=#]|${ARROW_MARK}|${DASH_MARK}`);
-/** "Recovery codes: in the fire safe" is a pointer, which is what we want. */
+const LABEL_IS_RE = new RegExp(`\\b(?:${SECRET_LABELS})\\s+(?:is|was)\\s+(["']?)(\\S+)`, "i");
+const CODE_DIGITS_RE = /\b(?:pin\s*#?\s*\d{4,8}|cv[vc]2?\s*#?\s*\d{3,4})\b/i;
+/**
+ * Words that say where a value is ("Recovery codes: in the fire safe") or
+ * that there is none. Matched as typed, in ASCII: a look-alike letter makes
+ * the word a value.
+ */
 const NOT_A_VALUE = new Set([
   "in", "at", "on", "inside", "kept", "stored", "see", "ask", "printed",
   "written", "saved", "held", "via", "under", "located", "lives",
   "none", "n/a", "tbd", "unknown",
 ]);
-const LABEL_IS_RE = new RegExp(`\\b(?:${SECRET_LABELS})\\s+(?:is|was)\\s+(["']?)(\\S+)`, "i");
-const CODE_DIGITS_RE = /\b(?:pin\s*#?\s*\d{4,8}|cv[vc]2?\s*#?\s*\d{3,4})\b/i;
+/** Words that may come before a pointer word: "1 copy in the safe", "a note in the safe". */
+const LEAD_IN_RE = /^(?:a|an|the|one|[1-9])$/i;
+const LOWER_WORD_RE = /^\p{Ll}+$/u;
+const LINE_BREAK_RE = /[\n\r\v\f\u0085\u2028\u2029]/;
+const EDGE_SYMBOLS_RE = /^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu;
+const LIST_MARKER_RE = /^[0-9]{1,2}[.)]$/;
+/** Letters, joined by an apostrophe, ".", "/", or "-" ("Mom's", "n/a", "fire-proof", "U.S"). */
+const WORD_RE = /^\p{L}+(?:['’./-]\p{L}+)*$/u;
+const WORD_PART_RE = /['’./-]/u;
+/** Each part of a word in lower case, upper case, or capitalized ("safe", "IRS", "Mom", "O'Brien"). */
+const PLAIN_CASE_RE = /^(?:[^\p{Lu}]+|\p{Lu}[^\p{Lu}]*|[^\p{Ll}]+)$/u;
+/** Letters joined by "-" only, in any case ("YubiKey-protected", "fire-proof"). */
+const HYPHENATED_RE = /^\p{L}+(?:-\p{L}+)+$/u;
+const YEAR_WORD_RE = /^(?:19|20)[0-9]{2}$/;
+const ORDINAL_RE = /^[0-9]{1,2}(?:st|nd|rd|th)$/i;
+/** Names of places people keep passwords that do not read as plain words. */
+const KNOWN_NAMES = new Set(["1password", "lastpass", "keepass", "keepassxc", "nordpass", "roboform", "icloud", "iphone", "ipad", "onedrive", "yubikey"]);
 
-/** Punctuation and symbols after a value ("kept.", "n/a»"); a value always starts with a letter or digit. */
-const TRAILING_PUNCT_RE = /[\p{P}\p{S}]+$/u;
+/** The words among whitespace-split tokens, each without punctuation or symbols at its edges; symbol-only tokens dropped. */
+function wordsOf(tokens: string[]) {
+  return tokens.map((w) => w.replace(EDGE_SYMBOLS_RE, "")).filter((w) => w !== "");
+}
+
+const tokensOf = (line: string) => line.split(/\s/);
+
+function isPointer(word: string | undefined) {
+  return word !== undefined && NOT_A_VALUE.has(word.toLowerCase());
+}
+
+/**
+ * A word that does not read like a secret: letters only, each part of it in
+ * lower case, upper case, or capitalized; a known product name ("1Password",
+ * "iCloud"); an ordinal ("2nd"); a year written before another such word ("the 2024
+ * tax binder"); or an email address or URL. A domain with no digits
+ * ("bank.example.com") is letters joined by "." already. Anything
+ * else ("hunter2", "Hunter2!", "4821", "p@ss", "hUnTeR", a year at the end)
+ * is secret-shaped.
+ */
+function isPlainWord(word: string, next?: string) {
+  if (KNOWN_NAMES.has(word.toLowerCase()) || ORDINAL_RE.test(word)) return true;
+  if (HYPHENATED_RE.test(word)) return true;
+  if (WORD_RE.test(word)) return word.split(WORD_PART_RE).every((part) => PLAIN_CASE_RE.test(part));
+  if (YEAR_WORD_RE.test(word)) return next !== undefined && WORD_RE.test(next);
+  return EMAIL_RE.test(word) || URL_RE.test(word);
+}
+
+function allPlain(words: string[]) {
+  return words.every((w, i) => isPlainWord(w, words[i + 1]));
+}
+
+/**
+ * After a credential label, the value (everything from its first letter or
+ * digit on) is a pointer, not a secret, when its line starts with a pointer
+ * word (optionally after a lead-in: "a note in", "1 copy kept in") and every
+ * word after the pointer word is plain (isPlainWord), and so is every word on
+ * the next line with words ("Password: see below\nHunter2!" is a value;
+ * "Password: see below\nIn the blue binder" is not). Numbers are read as
+ * described under "Numbers in a pointer". Anything else is a value.
+ */
+/*
+ * Numbers in a pointer. Before its words are read, each line has these set
+ * aside as plain words:
+ * - phones (the same formatted valid phones findFullNumber sets aside:
+ *   "ask Aunt May (404) 555-0123");
+ * - dates: "3/14", "14/3", "3/14/2024", "3/14/24", "2024-03-14",
+ *   "14.03.2024", "3-14-2024", "Mar 14", "March 14th, 2024";
+ * - a number right after an anchor word ("page 3", "p. 3", "box 2217",
+ *   "safe #2", "no. 7"): any number when the label is not a PIN, passcode, or
+ *   code, and 1-3 digits under one ("PIN: in safe #2" is a pointer, "PIN: in
+ *   drawer 4821" is a value).
+ * Any other number is still secret-shaped ("4821", "box 48 21": "21").
+ */
+const ANCHORS =
+  "page|pg|p\\.|pp\\.|box|drawer|shelf|no\\.|number|unit|room|apt\\.?|suite|locker|slot|folder|binder|tab|section|ch\\.|chapter|vol\\.";
+const ANCHORED_NUMBER_RE = new RegExp(
+  `(?<![\\p{L}\\p{N}])(?:(?:${ANCHORS})[ \\t]*#?|#)[ \\t]*([0-9]+)(?![\\p{L}\\p{N}])`,
+  "giu",
+);
+const MONTH_NAME =
+  "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+const DATE_WORD_RE = new RegExp(
+  "(?<![\\p{L}\\p{N}]|[0-9][-/.])(?:" +
+    [
+      `(?:${MONTH}/${DAY}|${DAY}/${MONTH})(?:/(?:${YEAR}|[0-9]{2}))?`,
+      `${YEAR}-${MONTH}-${DAY}`,
+      `(?:${DAY}([-.])${MONTH}|${MONTH}([-.])${DAY})(?:\\1|\\2)${YEAR}`,
+      `(?:${MONTH_NAME})\\.?[ \\t]+${DAY}(?:st|nd|rd|th)?(?:,?[ \\t]+${YEAR})?`,
+    ].join("|") +
+    ")(?![\\p{L}\\p{N}]|[-/.][0-9])",
+  "giu",
+);
+/** Labels under which a short number is the secret itself. */
+const CODE_LABEL_RE = /pin|passcode|code|cvv|cvc|otp/i;
+
+/** A line's words, with phones, dates, and anchored numbers (see above) set aside as plain words. */
+function lineWords(line: string, codeLabel: boolean) {
+  const text = setPhonesAside(line)
+    .masked.replace(DATE_WORD_RE, " date ")
+    .replace(ANCHORED_NUMBER_RE, (m, digits: string) =>
+      digits.length <= 3 || !codeLabel ? `${m.slice(0, -digits.length)}n` : m,
+    );
+  return wordsOf(tokensOf(text));
+}
+
+/** Each line of a value as its words (see lineWords). */
+function linesOf(value: string, label: string) {
+  const codeLabel = CODE_LABEL_RE.test(label);
+  return value.split(LINE_BREAK_RE).map((line) => lineWords(line, codeLabel));
+}
+
+/** Where the pointer word is in a value's first line: first, after a lead-in, or after a lead-in and one lower-case word; -1 if none. */
+function pointerAt(words: string[]) {
+  if (isPointer(words[0])) return 0;
+  if (!LEAD_IN_RE.test(words[0])) return -1;
+  if (isPointer(words[1])) return 1;
+  return isPointer(words[2]) && LOWER_WORD_RE.test(words[1]) ? 2 : -1;
+}
+
+function readsAsValue(value: string, label: string) {
+  const [first, ...more] = linesOf(value, label);
+  const at = pointerAt(first);
+  if (at < 0) return true;
+  return !allPlain(first.slice(at + 1)) || !allPlain(more.find((words) => words.length > 0) ?? []);
+}
+
+/** True when the value's line has a secret-shaped word; a list marker ("1.", "2)") first is fine. */
+function hasSecretWord(value: string, label: string) {
+  const line = value.split(LINE_BREAK_RE)[0];
+  const marker = LIST_MARKER_RE.exec(tokensOf(line)[0]);
+  return !allPlain(linesOf(marker ? line.slice(marker[0].length) : line, label)[0]);
+}
+
 const EDGE_PUNCT_RE = /^[("'[{<]+|[)"'\]}>.,;:!?]+$/g;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/;
 const URL_RE = /^(?:https?:\/\/|www\.)/i;
@@ -499,13 +660,17 @@ export function looksLikeSecretToken(raw: string) {
   return token.length >= 20 && entropy >= 3.5;
 }
 
-/** True when some "label: value" match carries a real value, not a pointer or blank. */
-function hasLabelledValue(re: RegExp, text: string) {
-  return [...text.matchAll(re)].some(([, raw]) => !NOT_A_VALUE.has(raw.replace(TRAILING_PUNCT_RE, "").toLowerCase()));
+/**
+ * True when some label match (found in `labels`) carries a value by `test`,
+ * read at the same offset in `plain`: the same text with look-alike letters
+ * left as typed.
+ */
+function hasLabelledValue(re: RegExp, labels: string, plain: string, test: ValueTest) {
+  return [...labels.matchAll(re)].some((m) => test(plain.slice(m.indices![1]![0]), m[0]));
 }
 
-function hasSecretLabel(text: string) {
-  if (hasLabelledValue(LABEL_WITH_VALUE_RE, text)) return true;
+function hasSecretLabel(text: string, plain: string) {
+  if (hasLabelledValue(LABEL_WITH_VALUE_RE, text, plain, readsAsValue)) return true;
   if (CODE_DIGITS_RE.test(text)) return true;
   const is = LABEL_IS_RE.exec(text);
   if (!is) return false;
@@ -539,8 +704,9 @@ export function foldConfusables(text: string) {
  * Separators that look like ":", "=", "-", or an arrow. NFKC has already made
  * fullwidth and small forms ASCII ("：", "＝", "－"); these have no such
  * mapping. Colons: ratio ∶, proportion ∷, modifier-letter and IPA colons
- * ꞉ ˸ ː, two-dot punctuation ⁚, Armenian ։, Hebrew ׃, Syriac ܃ ܄ ܅ ܆ ܇,
- * Mongolian ᠄, Z-notation ⦂, Lisu ꓽ, Bamum ꛴, Ethiopic ፡ ፥, runic ᛬.
+ * ꞉ ˸ ː, two-dot punctuation ⁚, tricolon ⁝, triple colon ⫶, APL quad colon ⍠,
+ * Armenian ։, Hebrew ׃, Syriac ܃ ܄ ܅ ܆ ܇ ܈ ܉, Mongolian ᠄, Z-notation ⦂,
+ * Lisu ꓽ, Bamum ꛴, Ethiopic ፡ ፥ ፦, runic ᛬.
  * Equals: ≔ ≕ ꞊ ═. Dashes: every dash punctuation character (\p{Pd}: ‐ – —
  * ― ⸺ 〜 ...), the minus signs − ˗ ⁒ ➖, hyphen bullet ⁃, swung dash ⁓, dash
  * with left upturn ⹃, the horizontal lines ⎯ ⏤, and the light and heavy
@@ -549,7 +715,7 @@ export function foldConfusables(text: string) {
  * dingbat arrows (➔ ... ➾), the right-pointing triangles ▶ ▷ ▸ ▹ ► ▻, and
  * "->" / "-->" typed out.
  */
-const COLON_LIKE_RE = /[∶∷꞉˸ː⁚։׃܃܄܅܆܇᠄⦂ꓽ꛴፡፥᛬]/g;
+const COLON_LIKE_RE = /[∶∷꞉˸ː⁚⁝⫶⍠։׃܃܄܅܆܇܈܉᠄⦂ꓽ꛴፡፥፦᛬]/g;
 const EQUALS_LIKE_RE = /[≔≕꞊═]/g;
 const DASH_LIKE_RE = /[\p{Pd}\u2212\u02D7\u2043\u2052\u2053\u2796\u2E43\u23AF\u23E4\u2500\u2501\u2504\u2505\u2508\u2509\u254C\u254D\u2574\u2576\u2578\u257A\u257C\u257E]/gu;
 const ARROW_RE = /-+>|[\u2190-\u21FF\u27F0-\u27FF\u2794\u2798-\u27BF\u2900-\u297F\u2B00-\u2BFF\u25B6-\u25BB\u{1F800}-\u{1F8FF}]/gu;
@@ -576,11 +742,14 @@ export function scanText(raw: string): PrivacyFinding | null {
   const full = findFullNumber(raw);
   if (full) return { level: "block", reason: full, message: FULL_NUMBER_ERROR };
   const text = normalizeForScan(raw);
-  const labels = foldSeparators(foldConfusables(normalizeForScan(blankWordSymbols(raw))));
-  if (CREDENTIAL_RES.some((re) => hasLabelledValue(re, labels))) {
+  const symbolsBlanked = normalizeForScan(blankWordSymbols(raw));
+  // foldConfusables maps one code unit to one, so offsets in `plain` and `labels` line up.
+  const plain = foldSeparators(symbolsBlanked);
+  const labels = foldSeparators(foldConfusables(symbolsBlanked));
+  if (CREDENTIAL_CHECKS.some(([re, test]) => hasLabelledValue(re, labels, plain, test))) {
     return { level: "block", reason: "credential", message: CREDENTIAL_ERROR };
   }
-  if (hasSecretLabel(labels)) return { level: "warn", reason: "secret_label", message: SECRET_WARNING };
+  if (hasSecretLabel(labels, plain)) return { level: "warn", reason: "secret_label", message: SECRET_WARNING };
   if (text.split(/\s/).some(looksLikeSecretToken)) {
     return { level: "warn", reason: "secret_token", message: SECRET_WARNING };
   }
