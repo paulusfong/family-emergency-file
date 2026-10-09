@@ -333,7 +333,6 @@ describe("credential labels followed by punctuation (QA)", () => {
       "Boarding pass: Delta app",
       "Bus pass: x",
       "Season pass - expires June",
-      "pass - x",
       "Passport: top drawer",
       "Passport - top drawer",
       "Passenger: Dana",
@@ -462,9 +461,11 @@ describe("credential labels: QA interim 4", () => {
       blocked(`password ${c}x`);
       allowed(`password${c}protected PDF`);
     }
-    // "pass" counts only with ":" or "=", whatever they look like.
-    allowed("pass → x");
-    allowed("pass ━ x");
+    // "pass" with an arrow or a dash counts only when it starts its line.
+    blocked("pass → x");
+    blocked("pass ━ x");
+    allowed("Bus pass → x");
+    allowed("Season pass ━ June");
     assert.equal(foldSeparators("a∶b꞉c≔d═e━f⁃g→h⇒i->j-->k—>l▶m"), "a:b:c=d=e-f-g\u2192h\u2192i\u2192j\u2192k\u2192l\u2192m");
     assert.equal(foldSeparators("Pat - 4 > 3, a=b; c: d"), "Pat - 4 > 3, a=b; c: d");
   });
@@ -650,5 +651,178 @@ describe("findBlocked", () => {
     assert.equal(findBlocked("Tr0ub4dor&3"), null);
     assert.equal(findBlocked("pwd: hunter2"), null);
     assert.equal(findBlocked("Example Bank"), null);
+  });
+});
+
+describe("credential labels: QA round 8 (pointer words, a dash on the next line)", () => {
+  const blocked = (text: string) => assert.deepEqual(scanText(text), { level: "block", reason: "credential", message: CREDENTIAL_ERROR }, JSON.stringify(text));
+  const allowed = (text: string) => assert.equal(level(text), null, JSON.stringify(text));
+
+  it("checks every word after a pointer word on its line", () => {
+    for (const text of [
+      "password: in hunter2",
+      "password\n: see hunter2",
+      "password\n: in hunter2",
+      "PIN: at 4821",
+      "PIN: in 4821",
+      "PIN: see 4821",
+      "Secret: ask hunter2",
+      "Password: in Hunter2!",
+      "password: in safe hunter2",
+      "password: see Sunshine1",
+      "PIN: in drawer 4821",
+      "password: in the vault hunter2",
+      "password\n: in the vault hunter2",
+      "password: in: hunter2",
+      "password: in, hunter2",
+      "password: see: hunter2",
+      "Password: see Tulip#2024",
+      "Password: stored s3cr3t-Pass",
+      "pin: none 4821",
+      "Password: in the safe p@ss",
+      "Password: in the safe hUnTeR",
+      "Password: kept in hunter2.tk",
+      "PIN: see 2024",
+      "PIN: kept in 2024 4821",
+      "PIN: in the 4821st drawer",
+      "Pass: in hunter2",
+    ]) {
+      blocked(text);
+    }
+    for (const w of ["at", "on", "none", "n/a", "tbd", "unknown", "kept", "via", "under", "lives"]) blocked(`Password: ${w} hunter2`);
+  });
+
+  it("reads the next line when nothing follows the pointer word", () => {
+    blocked("Password: see\nhunter2");
+    blocked("Password: in\n\n4821");
+    allowed("Password: kept in\nthe fire safe");
+    allowed("Password: see\n");
+    allowed("PIN: none");
+  });
+
+  it("does not take a look-alike pointer word as a pointer", () => {
+    blocked("password: іn hunter2");
+    blocked("password: іn the safe");
+    blocked("PIN: ѕee the binder");
+    // Look-alike letters still fold for the label itself.
+    allowed("раssword: in the family vault");
+  });
+
+  it("still allows pointers made of plain words", () => {
+    for (const text of [
+      "Password: in the safe",
+      "password: in the family vault",
+      "password: see access plan",
+      "Password: kept in the fireproof box",
+      "Secret: ask Mom",
+      "Password: stored with the lawyer",
+      "PIN: at the bank",
+      "password: in the blue folder",
+      "password: kept at Mom's house",
+      "PIN: in the 2024 tax binder",
+      "PIN: kept in the 2nd drawer",
+      "Password: ask O'Brien at the IRS",
+      "Password: in LastPass",
+      "Password: in the iCloud keychain",
+      "Password: see https://bank.example.com/reset",
+      "Password: ask pat@example.com",
+      "Password: see bank.example.com",
+      "Password: in the safe (top shelf), ask Mom",
+      "password: n/a",
+      "Password: see the U.S. passport folder",
+      "PIN: in the fire-proof box",
+      "Password: see binder — top shelf",
+    ]) {
+      allowed(text);
+    }
+    // "1Password" reads like a password token, so it only warns, as before.
+    assert.equal(reason("Password: stored in 1Password"), "secret_token");
+  });
+
+  it("allows a short lead-in before the pointer word", () => {
+    allowed("Password: 1 copy in the safe");
+    allowed("Password: a note in the safe");
+    allowed("Password: the card kept in the safe");
+    allowed("PIN: one copy stored with the lawyer");
+    allowed("Password: an envelope at the bank");
+    allowed("Password: a printed copy in the safe");
+    allowed("Password: 2 in the safe");
+    blocked("password: 1 hunter2");
+    blocked("password: a hunter2");
+    blocked("PIN: 1 4821");
+    blocked("Password: 1 copy in the safe hunter2");
+    blocked("Password: a Note in the safe");
+    blocked("Password: copy in the safe");
+    blocked("Password: a big note in the safe");
+    blocked("Password: 10 copies in the safe");
+    blocked("Password: 11 copies in the safe");
+    blocked("Password: 0 copies in the safe");
+    blocked("Password: a note2 in the safe");
+    blocked("Password: a hunter2 in the safe");
+    allowed("Password: 9 copies in the safe");
+    allowed("Password: THE card in the safe");
+  });
+
+  it("reads years, ordinals, and known names after a pointer word only in their exact shapes", () => {
+    for (const name of ["1Password", "LastPass", "KeePass", "KeePassXC", "NordPass", "RoboForm", "iCloud", "iPhone", "iPad", "OneDrive", "YubiKey"]) {
+      assert.notEqual(level(`Password: see the ${name} app`), "block", name);
+    }
+    allowed("PIN: in the 12th drawer");
+    allowed("Password: see the 1999 binder");
+    blocked("PIN: kept in the 2024");
+    blocked("PIN: in the 12024 binder");
+    blocked("PIN: in the 20245 binder");
+    blocked("PIN: in the 2024 4821");
+    blocked("PIN: in the 2024 2025 binder");
+    blocked("PIN: in the 2nd4821 drawer");
+    blocked("PIN: in the 123rd drawer");
+    blocked("Password: see fire-hOuse");
+    blocked("Password: see fire-house2");
+    allowed("Password: in the ((top shelf))");
+    allowed("Password: in the safe — ask Mom");
+  });
+
+  it("reads a dash at the start of the next line as a separator after a label alone on its line", () => {
+    for (const text of ["Password\n- hunter2", "Password\n— hunter2", "Password \n - hunter2", "PIN\n- 4821", "Password\n-hunter2", "Password\r\n- hunter2", "**Password**\n- hunter2", "Notes\nPIN\n- 4821"]) {
+      blocked(text);
+    }
+    allowed("Reset password\n- call the bank");
+    allowed("Password\n- call the bank");
+    allowed("PIN\n- ask Dad");
+  });
+
+  it("blocks a secret-shaped word on the line after a label alone on its line", () => {
+    for (const text of ["Password\nhunter2", "PIN\n4821", "Password\n\nHunter2!", "Secret\n1. hunter2", "PIN\n2) 4821", "PIN\n12"]) blocked(text);
+    blocked("PIN\n1.4821");
+    blocked("Password\nx1. Ask Mom");
+    blocked("Password\n123. Ask Mom");
+    for (const text of ["Password\nIn the safe", "PIN\nAsk Dad", "Password\n1. Ask Mom", "Password\n12. Ask Mom", "Password\n2) Ask  Mom", "Password\n\n", "Reset password\nhunter2", "Passwords\nhunter2"]) allowed(text);
+    // Only the credential labels count here; "pwd" alone on a line is left alone, as before.
+    assert.equal(level("pwd\nhunter"), null);
+  });
+
+  it("reads 'pass' with a dash or an arrow at the start of a line", () => {
+    blocked("pass - x");
+    blocked("Notes\nPass -> hunter2");
+    allowed("pass - in the family vault");
+    allowed("Season pass - expires June");
+    allowed("Boarding pass: Gate 12");
+    allowed("Wifi pass:");
+  });
+
+  it("reads the remaining colon look-alikes as separators", () => {
+    for (const c of ["⫶", "⁝", "፦", "܈", "܉", "⍠"]) {
+      blocked(`password ${c} hunter2`);
+      blocked(`PIN${c}4821`);
+      allowed(`password ${c} in the family vault`);
+    }
+  });
+
+  it("leaves the soft labels and a word before 'pass' as they were", () => {
+    assert.equal(level("pw: hunter2"), null);
+    assert.equal(reason("pwd: hunter2"), "secret_label");
+    assert.equal(reason("pwd: in hunter2"), "secret_label");
+    assert.equal(level("pwd: in the safe"), null);
+    assert.equal(level("Wifi pass: hunter2"), null);
   });
 });
