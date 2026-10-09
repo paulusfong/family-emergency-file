@@ -28,7 +28,8 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-auth", "@libsql/client", "libsql"],
+  // pdfkit reads its font metrics from node_modules at runtime.
+  serverExternalPackages: ["better-auth", "@libsql/client", "libsql", "pdfkit"],
   async headers() {
     return [
       {

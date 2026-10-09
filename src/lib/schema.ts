@@ -142,6 +142,23 @@ export const checklistItems = sqliteTable(
   (t) => [uniqueIndex("checklist_items_section_key").on(t.sectionId, t.itemKey)],
 );
 
+export const EXPORT_FORMATS = ["pdf", "json", "json_age"] as const;
+export type ExportFormat = (typeof EXPORT_FORMATS)[number];
+
+/** One row per export download: which file, which format, when. Never any content. */
+export const exportEvents = sqliteTable(
+  "export_events",
+  {
+    id: text("id").primaryKey(),
+    householdFileId: text("household_file_id")
+      .notNull()
+      .references(() => householdFiles.id, { onDelete: "cascade" }),
+    format: text("format", { enum: EXPORT_FORMATS }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  },
+  (t) => [index("export_events_file_id").on(t.householdFileId)],
+);
+
 /** Canonical S1–S12 titles for the Family Emergency File. */
 export const SECTION_DEFS = [
   { key: "S1", title: "Household snapshot", sortOrder: 1 },

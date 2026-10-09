@@ -17,6 +17,7 @@ export function Shell({
           {signedIn ? (
             <>
               <Link href="/app">Dashboard</Link>
+              <Link href="/app/export">Export</Link>
               <Link href="/app/settings">Settings</Link>
             </>
           ) : (

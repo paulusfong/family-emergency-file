@@ -61,6 +61,7 @@ See `.env.example`. Key vars: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `DATABASE
 - `household_files`: one per user; `privacy_ack_at` records when the first-run privacy sheet was dismissed
 - `sections`: twelve slots S1–S12 (the stored `status` column is unused; status is derived, see Progress)
 - `checklist_items`: 65 starter items across S1–S12 (5, 8, 5, 4, 6, 6, 4, 6, 4, 6, 7, 4; Clark-aligned, `src/lib/sections.ts`), status `open|done|skipped`
+- `export_events`: one row per download (file, format `pdf|json|json_age`, time), never any content
 - `entries`: `contact|account|policy|document_location|access_plan|note`, label plus metadata JSON validated by `src/lib/entry-fields.ts`
 
 On first successful session, `ensureHouseholdFile` creates exactly one file and seeds the twelve sections and their checklist items in one atomic batch. The same batch backfills files created before a section or item existed.
@@ -95,6 +96,20 @@ On the first dashboard visit a non-modal "Access plans, never passwords" sheet e
 Autosave never sends a draft while any field has a block-level finding, including an edit made while an earlier save is in flight, and an entry saved before a rule changed will not re-save until the flagged field is fixed.
 
 Last-4, email, and phone fields keep their own format rules and skip the warn heuristics (an email address can look like a token), but every field, those included, gets the block-level checks. A phone field takes a valid number written with separators and no extension, such as `(404) 555-0123` or `+44 20 7946 0958`.
+
+## Export
+
+`/app/export` offers three downloads of the signed-in owner's whole file:
+
+- **PDF** (`GET /app/export/pdf`, `src/lib/export-pdf.ts`, pdfkit): a cover page with "Store this somewhere safe; it contains no passwords.", the export date, progress, and a section list, then one page per section S1–S12 with its status, checklist (`[x]` done, `[-]` skipped, `[ ]` open), and entries. Every page has a footer with the notice and "Page n of m". The standard Helvetica fonts cover Windows-1252 only, so other characters print as `?` (the JSON keeps them).
+- **JSON** (`GET /app/export/json`): `{ kind: "family-emergency-file", version: 1, exportedAt, title, notice, progress, sections: [{ key, title, status, statusLabel, checklist: [{ label, status }], entries: [{ type, typeTitle, label, fields: [{ name, label, value }], updatedAt }] }] }`. No ids or email.
+- **Encrypted JSON**: the browser fetches `/app/export/json?for=age` and encrypts it with [age](https://age-encryption.org/v1) (scrypt passphrase recipient, work factor 2^18, `age-encryption` package) before saving `family-emergency-file-YYYY-MM-DD.json.age`. The passphrase inputs have no `name` and the form never posts, so the passphrase never reaches the server. Decrypt with `age -d family-emergency-file-YYYY-MM-DD.json.age > file.json`. There is no recovery if the passphrase is lost.
+
+The file is looked up from the session, never from the URL, so only the owner can download it. Responses send `Cache-Control: no-store, max-age=0`, `Pragma: no-cache`, and `Content-Disposition: attachment`, and each download writes an `export_events` row. Any stored value that today's block rules would reject is replaced with `[removed: looked like a password or full number]`. The export page uses plain `<a>` links, because a `next/link` prefetch would count as an export.
+
+## Account delete
+
+Settings → Delete account → `/app/settings/delete`. The owner must type `DELETE` (exactly, surrounding spaces ignored). `deleteAccount` then runs `deleteUserData` (`src/lib/account.ts`): one `db.batch` (a single transaction) that deletes export events, entries, checklist items, sections, the household file, sessions, accounts, pending magic-link rows for the user's email, and the user, children first, so it does not depend on foreign-key cascades. It then signs out and redirects to `/account-deleted`. `src/lib/account.test.ts` seeds two real better-auth users, deletes one, and scans every row of every table for the deleted user's id, email, file id, and section ids. It runs once with foreign keys on and once with them off, and fails if a new table appears that the deletion does not know about.
 
 ## Pre-launch checklist
 

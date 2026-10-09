@@ -20,11 +20,23 @@ describe("no secret inputs (FR-P1)", () => {
     assert.ok(tsx.some((f) => f.endsWith("entry-editor.tsx")));
   });
 
-  it("has no password-type inputs anywhere in src", () => {
+  /**
+   * The one masked field is the encrypted-export passphrase (PR-FEF-4). It is
+   * a client component with unnamed inputs and no form action, so no form can
+   * submit it; it is used by age in the browser and never reaches the server.
+   */
+  const PASSPHRASE_ONLY = path.resolve("src/components/encrypted-export.tsx");
+
+  it("has no password-type inputs anywhere in src except the client-side export passphrase", () => {
+    const passwordType = /type\s*=\s*\{?\s*["'`]password["'`]/i;
+    const withPassword = files.filter((f) => passwordType.test(fs.readFileSync(f, "utf8")));
+    assert.deepEqual(withPassword, [PASSPHRASE_ONLY]);
+    const text = fs.readFileSync(PASSPHRASE_ONLY, "utf8");
+    assert.match(text, /^"use client";/);
+    assert.doesNotMatch(text, /\bname=/);
+    assert.doesNotMatch(text, /\baction=/);
     for (const f of files) {
-      const text = fs.readFileSync(f, "utf8");
-      assert.doesNotMatch(text, /type\s*=\s*\{?\s*["'`]password["'`]/i, f);
-      assert.doesNotMatch(text, /kind:\s*["']password["']/i, f);
+      assert.doesNotMatch(fs.readFileSync(f, "utf8"), /kind:\s*["']password["']/i, f);
     }
   });
 

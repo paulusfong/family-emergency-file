@@ -24,7 +24,10 @@ import { pathToFileURL } from "node:url";
 export const MUTATE_EXTRA = [
   "src/app/actions.ts",
   "src/app/app/actions.ts",
+  "src/app/app/export/json/route.ts",
+  "src/app/app/export/pdf/route.ts",
   "src/app/app/sections/actions.ts",
+  "src/app/app/settings/delete/actions.ts",
   "src/proxy.ts",
 ];
 

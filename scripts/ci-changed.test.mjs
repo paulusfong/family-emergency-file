@@ -77,14 +77,19 @@ describe("file classification", () => {
     assert.equal(isMutateTarget("src/components/entry-editor.tsx"), false);
     assert.equal(isMutateTarget("src/app/app/sections/[key]/page.tsx"), false);
     assert.equal(isMutateTarget("src/lib/view.tsx"), false);
-    assert.deepEqual(STRYKER_MUTATE.slice(0, 6), [
+    assert.deepEqual(STRYKER_MUTATE.slice(0, 9), [
       "src/lib/**/*.ts",
       "src/app/actions.ts",
       "src/app/app/actions.ts",
+      "src/app/app/export/json/route.ts",
+      "src/app/app/export/pdf/route.ts",
       "src/app/app/sections/actions.ts",
+      "src/app/app/settings/delete/actions.ts",
       "src/proxy.ts",
       "!src/**/*.test.ts",
     ]);
+    assert.equal(isMutateTarget("src/app/app/settings/delete/actions.ts"), true);
+    assert.equal(isMutateTarget("src/app/app/settings/delete/page.tsx"), false);
   });
 
   it("forces the full suite for dependency, tooling, harness, and migration changes", () => {
