@@ -10,6 +10,7 @@ import {
   updateEntry,
 } from "@/lib/entries";
 import {
+  fieldErrorSummary,
   isEntryType,
   validateEntry,
   type SaveEntryInput,
@@ -48,7 +49,7 @@ export async function saveEntry(input: SaveEntryInput): Promise<SaveEntryResult>
     return {
       ok: false,
       status: 400,
-      error: "Some fields need a fix before this can save.",
+      error: fieldErrorSummary(input.entryType, valid.fieldErrors),
       fieldErrors: valid.fieldErrors,
     };
   }

@@ -1,0 +1,29 @@
+{
+ "reject": {
+  "card16": "4111111111111111",
+  "card16-spaces": "4111 1111 1111 1111",
+  "card16-dashes": "4111-1111-1111-1111",
+  "ssn-dashes": "123-45-6789",
+  "ssn-9digits": "123456789",
+  "ssn-spaces": "123 45 6789",
+  "bank10": "0001234567",
+  "bank17": "12345678901234567",
+  "routing": "021000021",
+  "embedded-acct": "acct 000123456789 at Chase",
+  "embedded-ssn-spaces": "SSN is 123 45 6789",
+  "acct12-spaced": "0001 2345 6789",
+  "ssn-dots": "123.45.6789",
+  "card-dots": "4111.1111.1111.1111",
+  "card-slashes": "4111/1111/1111/1111"
+ },
+ "allow": {
+  "phone-paren": "(404) 555-0123",
+  "phone-intl": "+1 404 555 0123",
+  "date": "2026-09-29",
+  "last4": "1234",
+  "zip9": "30301-1234",
+  "policy-letters": "POL-AB12C-7788",
+  "two-phones": "404 555 0123 or 404 555 0199",
+  "date-range": "2026-09-29 - 2027-09-29"
+ }
+}

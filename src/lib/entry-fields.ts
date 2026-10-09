@@ -1,4 +1,6 @@
 import { ENTRY_TYPES, type EntryType } from "./schema";
+import { isValidPhoneNumber } from "libphonenumber-js/min";
+import { CREDENTIAL_ERROR, FULL_NUMBER_ERROR, findBlocked, isFormattedPhone } from "./privacy-warn";
 
 export type FieldKind = "text" | "textarea" | "last4" | "phone" | "email";
 
@@ -107,6 +109,8 @@ export const ENTRY_TYPE_DEFS: Record<EntryType, EntryTypeDef> = {
 
 export const LIMITS = { label: 120, text: 200, textarea: 2000 } as const;
 
+export { CREDENTIAL_ERROR, FULL_NUMBER_ERROR };
+
 export type EntryValues = Record<string, string>;
 export type FieldErrors = Record<string, string>;
 
@@ -121,41 +125,65 @@ export type SaveEntryResult =
   | { ok: true; entryId: string }
   | { ok: false; status: 400 | 404 | 500; error: string; fieldErrors?: FieldErrors };
 
-export const FULL_NUMBER_ERROR =
-  "This looks like a full account, card, or ID number. Store the last 4 digits at most.";
-
 export function isEntryType(value: unknown): value is EntryType {
   return (ENTRY_TYPES as readonly unknown[]).includes(value);
 }
 
-/**
- * True when text contains something shaped like a full account, card, or
- * Social Security number: 9+ digits in a row, 13+ digits once spaces and
- * dashes are removed, or the ###-##-#### SSN layout.
- */
-export function looksLikeFullNumber(text: string) {
-  if (/\d{9,}/.test(text)) return true;
-  if (/\b\d{3}-\d{2}-\d{4}\b/.test(text)) return true;
-  return /\d{13,}/.test(text.replace(/[\s-]/g, ""));
+/** Block-level privacy message (full number or labelled credential), else null. */
+function blockedError(value: string) {
+  return findBlocked(value)?.message ?? null;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PHONE_RE = /^\+?[\d\s().x-]{7,30}$/;
+/**
+ * Characters a phone field may hold; libphonenumber-js then checks it is a
+ * valid number. No letters or "#", so no extension ("x12", "ext. 12").
+ */
+const PHONE_RE = /^\+?[\d\s().-]+$/;
+/** Ten digits and nothing else: a US number typed without its separators. */
+const BARE_PHONE_RE = /^[0-9]{10}$/;
+export const PHONE_ERROR =
+  "Enter a phone number with its area code and no extension, like (404) 555-0123, or with + and the country code, like +44 20 7946 0958.";
 
 function limitFor(kind: FieldKind) {
   return kind === "textarea" ? LIMITS.textarea : LIMITS.text;
 }
 
+function formatError(kind: FieldKind, value: string): string | null {
+  if (kind === "last4") return /^\d{4}$/.test(value) ? null : "Enter exactly 4 digits, or leave it blank.";
+  if (kind === "email") return EMAIL_RE.test(value) ? null : "Enter a valid email address.";
+  if (kind === "phone") {
+    return PHONE_RE.test(value) && isFormattedPhone(value) ? null : PHONE_ERROR;
+  }
+  return null;
+}
+
+/**
+ * Every field, whatever its kind, goes through the shared block-level
+ * privacy checks: a card number typed into Phone or Email is still a card
+ * number. The privacy message wins over a format message, with one
+ * exception: a valid US number typed into Phone without separators
+ * ("4045550123") is a mistyped phone, so it gets the phone message. Any other
+ * digit run in Phone ("0001234567", "12345678901", "123 456 789") keeps the
+ * privacy message, as QA's corpora require. The value is rejected either way.
+ */
 function checkField(def: FieldDef, value: string): string | null {
   if (value.length > limitFor(def.kind)) return `Keep this under ${limitFor(def.kind)} characters.`;
-  if (def.kind === "last4") {
-    return /^\d{4}$/.test(value) ? null : "Enter exactly 4 digits, or leave it blank.";
-  }
-  if (def.kind === "email") return EMAIL_RE.test(value) ? null : "Enter a valid email address.";
-  if (def.kind === "phone") {
-    return PHONE_RE.test(value) ? null : "Enter a phone number using digits, spaces, and + ( ) - only.";
-  }
-  return looksLikeFullNumber(value) ? FULL_NUMBER_ERROR : null;
+  if (def.kind === "phone" && BARE_PHONE_RE.test(value) && isValidPhoneNumber(value, "US")) return PHONE_ERROR;
+  return blockedError(value) ?? formatError(def.kind, value);
+}
+
+/**
+ * The toast line for a rejected save: the field and its message when one
+ * field is wrong ("Phone: Enter a phone number…"), else the fields' names.
+ */
+export function fieldErrorSummary(type: EntryType, fieldErrors: FieldErrors) {
+  const def = ENTRY_TYPE_DEFS[type];
+  const labelOf = (name: string) =>
+    name === "label" ? def.labelField.label : (def.fields.find((f) => f.name === name)?.label ?? name);
+  const names = Object.keys(fieldErrors);
+  if (names.length === 1) return `${labelOf(names[0])}: ${fieldErrors[names[0]]}`;
+  return `Fix these fields before this can save: ${names.map(labelOf).join(", ")}.`;
 }
 
 export type ValidatedEntry =
@@ -164,7 +192,8 @@ export type ValidatedEntry =
 
 /**
  * Server-side validation. Accepts only the known fields for the type, trims
- * them, drops blanks, and rejects anything that looks like a full number.
+ * them, drops blanks, and rejects block-level privacy findings (full numbers
+ * and labelled credentials) in every field, phone and email included.
  */
 export function validateEntry(type: EntryType, raw: unknown): ValidatedEntry {
   const input = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -185,7 +214,10 @@ export function validateEntry(type: EntryType, raw: unknown): ValidatedEntry {
   if (!fieldErrors.label) {
     if (!label) fieldErrors.label = `${def.labelField.label} is required.`;
     else if (label.length > LIMITS.label) fieldErrors.label = `Keep this under ${LIMITS.label} characters.`;
-    else if (looksLikeFullNumber(label)) fieldErrors.label = FULL_NUMBER_ERROR;
+    else {
+      const blocked = blockedError(label);
+      if (blocked) fieldErrors.label = blocked;
+    }
   }
 
   const payload: EntryValues = {};

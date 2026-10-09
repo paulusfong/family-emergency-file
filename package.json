@@ -11,12 +11,14 @@
     "test": "node --experimental-test-module-mocks --import tsx --import ./src/test/setup.mjs --test 'src/**/*.test.ts' 'scripts/**/*.test.mjs'",
     "test:coverage": "node scripts/coverage.mjs",
     "test:mutation": "stryker run",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "scan:full-numbers": "node --import tsx scripts/scan-full-numbers.mjs"
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
     "better-auth": "^1.7.1",
     "drizzle-orm": "^0.45.2",
+    "libphonenumber-js": "^1.13.14",
     "next": "^16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"

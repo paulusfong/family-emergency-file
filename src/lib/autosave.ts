@@ -17,6 +17,7 @@ export type Timers = {
 
 export const NETWORK_ERROR =
   "Couldn't reach the server, so your changes aren't saved yet. Check your connection and retry.";
+export const SERVER_ERROR = "Something went wrong on the server, so your changes aren't saved yet. Retry in a moment.";
 
 const defaultTimers: Timers = {
   set: (fn, ms) => setTimeout(fn, ms),
@@ -30,6 +31,8 @@ export type AutosaverOptions<V> = {
   /** True when `initial` is already persisted (editing an existing entry). */
   persisted: boolean;
   canSave?: (value: V) => boolean;
+  /** Called when a save fails after dispose(), when no state is emitted any more. */
+  onLost?: (error: string, value: V) => void;
   delayMs?: number;
   timers?: Timers;
 };
@@ -37,19 +40,26 @@ export type AutosaverOptions<V> = {
 /**
  * Debounced, serialized autosave. At most one save runs at a time; edits made
  * during a save are saved right after it with the latest value. A thrown save
- * (offline, server unreachable) becomes an error state the UI shows as a toast.
+ * becomes an error state the UI shows as a toast: a failed fetch (offline,
+ * server unreachable; browsers throw a TypeError) says so, and anything else
+ * (an HTTP 500, which Next.js throws as a plain Error) is a server error.
  */
 export function createAutosaver<V>(opts: AutosaverOptions<V>) {
-  const { save, onState, canSave = () => true, delayMs = 800, timers = defaultTimers } = opts;
+  const { save, onState, onLost, canSave = () => true, delayMs = 800, timers = defaultTimers } = opts;
   let latest = opts.initial;
   let lastSaved = opts.persisted ? JSON.stringify(opts.initial) : null;
   let timer: unknown = null;
   let inFlight: Promise<void> | null = null;
   let queued = false;
   let disposed = false;
+  /** The error of the last state emitted, if it was one. */
+  let failed: string | undefined;
 
   const emit = (state: AutosaveState) => {
-    if (!disposed) onState(state);
+    if (disposed) return;
+    // Only error states carry an error, so any other state clears it.
+    failed = state.error;
+    onState(state);
   };
 
   const cancelTimer = () => {
@@ -64,8 +74,8 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
     let outcome: SaveOutcome;
     try {
       outcome = await save(value);
-    } catch {
-      outcome = { ok: false, error: NETWORK_ERROR };
+    } catch (err) {
+      outcome = { ok: false, error: err instanceof TypeError ? NETWORK_ERROR : SERVER_ERROR };
     }
     inFlight = null;
     if (outcome.ok) lastSaved = key;
@@ -74,11 +84,15 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
       await run();
       return;
     }
-    emit(
-      outcome.ok
-        ? { status: "saved" }
-        : { status: "error", error: outcome.error, fieldErrors: outcome.fieldErrors },
-    );
+    if (!outcome.ok) {
+      if (disposed) onLost?.(outcome.error, value);
+      emit({ status: "error", error: outcome.error, fieldErrors: outcome.fieldErrors });
+      return;
+    }
+    // An edit made during the save is either waiting on its timer or blocked;
+    // report that instead of claiming everything is saved.
+    if (JSON.stringify(latest) === key) emit({ status: "saved" });
+    else emit({ status: canSave(latest) ? "pending" : "blocked" });
   }
 
   function run(): Promise<void> {
@@ -117,9 +131,29 @@ export function createAutosaver<V>(opts: AutosaverOptions<V>) {
       cancelTimer();
       return run();
     },
+    /**
+     * Stops reporting state. An edit still waiting on its timer is sent now,
+     * so leaving the editor does not drop it; nothing else is retried. A save
+     * that fails from here on goes to onLost, and so does one that had
+     * already failed (the last state was an error, as when a blur's save
+     * fails and the person then clicks Done).
+     */
     dispose() {
       disposed = true;
-      cancelTimer();
+      if (timer !== null) {
+        cancelTimer();
+        void run();
+      } else if (failed !== undefined) {
+        onLost?.(failed, latest);
+      }
+    },
+    /**
+     * Re-arms a disposed saver. React StrictMode runs every effect's cleanup
+     * and then the effect again on mount; without this the second mount keeps
+     * a saver that silently drops every state change.
+     */
+    resume() {
+      disposed = false;
     },
   };
 }

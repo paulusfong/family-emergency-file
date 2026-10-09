@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { NETWORK_ERROR, createAutosaver, type AutosaveState, type SaveOutcome } from "./autosave";
+import { NETWORK_ERROR, SERVER_ERROR, createAutosaver, type AutosaveState, type SaveOutcome } from "./autosave";
 
 type V = { label: string };
 
@@ -54,8 +54,10 @@ function setup(opts: {
   initial?: V;
   canSave?: (v: V) => boolean;
   delayMs?: number;
+  noOnLost?: boolean;
 }) {
   const states: AutosaveState[] = [];
+  const lost: [string, V][] = [];
   const saves: V[] = [];
   const t = fakeTimers();
   const saver = createAutosaver<V>({
@@ -65,12 +67,13 @@ function setup(opts: {
     delayMs: opts.delayMs,
     timers: t.timers,
     onState: (s) => states.push(s),
+    onLost: opts.noOnLost ? undefined : (error, v) => lost.push([error, v]),
     save: async (v) => {
       saves.push(v);
       return opts.save ? opts.save(v) : { ok: true };
     },
   });
-  return { saver, states, saves, t };
+  return { saver, states, saves, t, lost };
 }
 
 describe("createAutosaver", () => {
@@ -162,6 +165,20 @@ describe("createAutosaver", () => {
     assert.match(NETWORK_ERROR, /aren't saved yet/);
   });
 
+  it("turns any other thrown save (an HTTP 500) into a server error", async () => {
+    const { saver, states } = setup({
+      save: async () => {
+        throw new Error("An unexpected response was received from the server.");
+      },
+    });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    assert.deepEqual(states.at(-1), { status: "error", error: SERVER_ERROR, fieldErrors: undefined });
+    assert.notEqual(SERVER_ERROR, NETWORK_ERROR);
+    assert.match(SERVER_ERROR, /server.*aren't saved yet/);
+    assert.doesNotMatch(SERVER_ERROR, /reach/);
+  });
+
   it("reports server-side validation errors", async () => {
     const { saver, states } = setup({
       save: async () => ({ ok: false, error: "Fix it", fieldErrors: { last4: "bad" } }),
@@ -202,6 +219,34 @@ describe("createAutosaver", () => {
     );
   });
 
+  it("reports blocked, not saved, when an edit during a save cannot be saved", async () => {
+    const gate = deferred<SaveOutcome>();
+    const { saver, states, saves, t } = setup({ save: () => gate.promise, canSave: (v) => !v.label.includes("secret") });
+    saver.schedule({ label: "one" });
+    const inFlight = saver.flush();
+    saver.schedule({ label: "one secret" });
+    gate.resolve({ ok: true });
+    await inFlight;
+    assert.deepEqual(saves, [{ label: "one" }]);
+    assert.equal(t.size, 0);
+    assert.deepEqual(states.at(-1), { status: "blocked" });
+  });
+
+  it("reports pending, not saved, when a saveable edit is waiting on its timer", async () => {
+    const gate = deferred<SaveOutcome>();
+    const { saver, states, saves, t } = setup({ save: (v) => (v.label === "one" ? gate.promise : Promise.resolve({ ok: true })) });
+    saver.schedule({ label: "one" });
+    const inFlight = saver.flush();
+    saver.schedule({ label: "two" });
+    gate.resolve({ ok: true });
+    await inFlight;
+    assert.deepEqual(states.at(-1), { status: "pending" });
+    t.fire();
+    await tick();
+    assert.deepEqual(saves, [{ label: "one" }, { label: "two" }]);
+    assert.deepEqual(states.at(-1), { status: "saved" });
+  });
+
   it("retries the latest value after a failed save that had queued edits", async () => {
     const gate = deferred<SaveOutcome>();
     let call = 0;
@@ -236,6 +281,134 @@ describe("createAutosaver", () => {
     assert.deepEqual(states.at(-1), { status: "error", error: "down", fieldErrors: undefined });
   });
 
+  it("sends an edit still waiting on its timer when disposed, without emitting", async () => {
+    const { saver, states, saves, t } = setup({});
+    saver.schedule({ label: "x" });
+    const before = states.length;
+    saver.dispose();
+    assert.equal(t.size, 0);
+    await saver.flush();
+    assert.deepEqual(saves, [{ label: "x" }]);
+    assert.equal(states.length, before);
+  });
+
+  it("reports a save that had already failed to onLost on dispose, without retrying it", async () => {
+    let calls = 0;
+    const { saver, lost, states } = setup({
+      save: async () => {
+        calls++;
+        return { ok: false, error: "rejected" };
+      },
+    });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    assert.equal(states.at(-1)!.status, "error");
+    assert.deepEqual(lost, []);
+    // A blur's save failed, then the person clicked Done: the edit is lost unless reported.
+    saver.dispose();
+    await tick();
+    assert.equal(calls, 1);
+    assert.deepEqual(lost, [["rejected", { label: "x" }]]);
+  });
+
+  it("does not report on dispose once a failed save has been fixed", async () => {
+    let fail = true;
+    const { saver, lost } = setup({ save: async () => (fail ? { ok: false, error: "rejected" } : { ok: true }) });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    fail = false;
+    await saver.flush();
+    saver.dispose();
+    await tick();
+    assert.deepEqual(lost, []);
+  });
+
+  it("sends a new edit after a failed save on dispose and reports only its outcome", async () => {
+    let fail = true;
+    const { saver, lost, saves } = setup({ save: async () => (fail ? { ok: false, error: "rejected" } : { ok: true }) });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    fail = false;
+    saver.schedule({ label: "xy" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }, { label: "xy" }]);
+    assert.deepEqual(lost, []);
+  });
+
+  it("does not report on dispose when the last state is blocked, not an error", async () => {
+    const { saver, lost } = setup({
+      save: async () => ({ ok: false, error: "rejected" }),
+      canSave: (v) => !v.label.includes("secret"),
+    });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    saver.schedule({ label: "x secret" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(lost, []);
+  });
+
+  it("works without onLost when a failed save is disposed", async () => {
+    const { saver, saves } = setup({ noOnLost: true, save: async () => ({ ok: false, error: "rejected" }) });
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }]);
+  });
+
+  it("reports a flush on dispose that is rejected to onLost, without emitting", async () => {
+    const { saver, states, lost } = setup({ save: async () => ({ ok: false, error: "rejected" }) });
+    saver.schedule({ label: "x" });
+    const before = states.length;
+    saver.dispose();
+    await tick();
+    assert.deepEqual(lost, [["rejected", { label: "x" }]]);
+    assert.equal(states.length, before);
+  });
+
+  it("reports an in-flight save that throws after dispose to onLost", async () => {
+    const gate = deferred<SaveOutcome>();
+    const { saver, lost } = setup({ save: () => gate.promise });
+    saver.schedule({ label: "y" });
+    const done = saver.flush();
+    saver.dispose();
+    gate.reject(new TypeError("Failed to fetch"));
+    await done;
+    assert.deepEqual(lost, [[NETWORK_ERROR, { label: "y" }]]);
+  });
+
+  it("reports only the last of queued saves after dispose", async () => {
+    const gate = deferred<SaveOutcome>();
+    let n = 0;
+    const { saver, lost } = setup({ save: () => (++n === 1 ? gate.promise : Promise.resolve({ ok: false, error: "second" })) });
+    saver.schedule({ label: "one" });
+    const done = saver.flush();
+    saver.schedule({ label: "two" });
+    saver.dispose();
+    gate.resolve({ ok: false, error: "first" });
+    await done;
+    assert.deepEqual(lost, [["second", { label: "two" }]]);
+  });
+
+  it("does not call onLost for a save that succeeds after dispose", async () => {
+    const { saver, lost, saves } = setup({});
+    saver.schedule({ label: "x" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }]);
+    assert.deepEqual(lost, []);
+  });
+
+  it("works without onLost", async () => {
+    const { saver, saves } = setup({ noOnLost: true, save: async () => ({ ok: false, error: "rejected" }) });
+    saver.schedule({ label: "x" });
+    saver.dispose();
+    await tick();
+    assert.deepEqual(saves, [{ label: "x" }]);
+  });
+
   it("stops emitting and clears timers after dispose", async () => {
     const { saver, states, t } = setup({});
     saver.schedule({ label: "x" });
@@ -244,6 +417,16 @@ describe("createAutosaver", () => {
     assert.equal(t.size, 0);
     await saver.flush();
     assert.equal(states.length, before);
+  });
+
+  it("QA-4: emits again after resume, as a StrictMode remount needs", async () => {
+    const { saver, states, lost } = setup({ save: async () => ({ ok: false, error: "rejected" }) });
+    saver.dispose();
+    saver.resume();
+    saver.schedule({ label: "x" });
+    await saver.flush();
+    assert.deepEqual(states.at(-1), { status: "error", error: "rejected", fieldErrors: undefined });
+    assert.deepEqual(lost, []);
   });
 
   it("uses real timers by default", async () => {
@@ -262,5 +445,20 @@ describe("createAutosaver", () => {
     saver.schedule({ label: "b" });
     await new Promise((r) => setTimeout(r, 20));
     assert.deepEqual(saves, ["b"]);
+  });
+
+  it("clears the real timer when a save is flushed early", async () => {
+    const states: string[] = [];
+    const saver = createAutosaver<V>({
+      initial: { label: "" },
+      persisted: false,
+      delayMs: 1,
+      onState: (s) => states.push(s.status),
+      save: async () => ({ ok: true }),
+    });
+    saver.schedule({ label: "a" });
+    await saver.flush();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(states, ["pending", "saving", "saved"]);
   });
 });
