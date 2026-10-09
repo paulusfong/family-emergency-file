@@ -418,6 +418,8 @@ describe("credential labels: QA interim 4", () => {
     allowed("password: » in the family vault «");
     allowed("Password: (see the access plan)");
     allowed("PIN: — n/a.");
+    allowed("Password: kept...");
+    allowed("PIN: see!!");
   });
 
   it("blocks with every punctuation and symbol character in the BMP as the token", () => {
@@ -435,6 +437,8 @@ describe("credential labels: QA interim 4", () => {
     blocked("PIN: № 4821");
     allowed("password: ℡");
     allowed("password: in the family vault");
+    // A blanked symbol splits a word rather than joining its letters into a pointer word.
+    blocked("password: ke㏌pt");
   });
 
   it("reads Unicode colons, equals signs, arrows, and dashes as separators", () => {

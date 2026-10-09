@@ -762,6 +762,8 @@ describe("findFullNumber: digits on both sides of a phone", () => {
     const tail = luhnTail(`12${NAT}`, 4);
     assert.equal(findFullNumber(`12 ${PHONE} ${tail}`), "full_number");
     assert.equal(findFullNumber(`12 ${PHONE} ${spoil(tail)}`), null);
+    // With a word, only the join reads it.
+    assert.equal(findFullNumber(`Unit 12 ${PHONE} ${tail}`), "full_number");
     const short = luhnTail(`12${NAT}`, 3);
     assert.equal(findFullNumber(`Unit 12 ${PHONE} ${short}`), null);
     assert.equal(findFullNumber(`Unit 12, ${PHONE}, ${short}`), null);
